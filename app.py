@@ -40,22 +40,15 @@ def load_models():
 
 
 try:
-
     feature_extractor, scaler, svm = load_models()
 
 except Exception as e:
 
-    st.error("❌ Unable to load the trained model files.")
+    st.error("❌ Model loading failed.")
 
-    st.write(
-        "Make sure these files are in the same GitHub repository:"
-    )
+    st.error(f"Actual error: {e}")
 
-    st.code("""
-GSFF_Feature_Extractor.keras
-RobustScaler.pkl
-SVM_Classifier.pkl
-    """)
+    st.write("Please check the error above.")
 
     st.stop()
 
