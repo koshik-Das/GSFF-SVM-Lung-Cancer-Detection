@@ -2,39 +2,14 @@
 # app.py
 # GSFF-SVM Lung Cancer Detection
 #
-# OPTION 3:
-# CT Verification Model + GSFF-SVM Classifier
-#
 # Pipeline:
-#
-# Uploaded Image
-#       ↓
-# Colour Image Check
-#       ↓
-# CT Verifier
-#       ↓
-# ┌─────────────────────────────┐
-# │ CT image?                   │
-# └─────────────────────────────┘
-#       ↓ YES
-# EfficientNetB0
-#       ↓
-# block5c_add
-#       ↓
-# GAP + GSDP
-#       ↓
-# GSFF (224 features)
-#       ↓
-# RobustScaler
-#       ↓
-# RBF-SVM
-#       ↓
-# Normal / Benign / Malignant
-#
-# NO Lambda
-# NO keras.backend.K
+# 1. Reject clearly colored images
+# 2. CT/MRI/X-ray modality verification
+# 3. Only CT images are accepted
+# 4. GSFF feature extraction
+# 5. RobustScaler
+# 6. RBF-SVM classification
 # ============================================================
-
 
 import os
 from pathlib import Path
@@ -45,14 +20,6 @@ import tensorflow as tf
 import joblib
 
 from PIL import Image
-
-from tensorflow.keras.applications import EfficientNetB0
-from tensorflow.keras.layers import (
-    Layer,
-    GlobalAveragePooling2D,
-    Concatenate
-)
-from tensorflow.keras.models import Model
 
 
 # ============================================================
@@ -77,15 +44,17 @@ BASE_DIR = Path(__file__).resolve().parent
 # MODEL FILES
 # ============================================================
 
-CT_VERIFIER_FILE = (
-    BASE_DIR / "CT_Verifier.keras"
+CT_VERIFIER_PATH = BASE_DIR / "CT_Verifier.keras"
+
+FEATURE_EXTRACTOR_PATH = (
+    BASE_DIR / "GSFF_Feature_Extractor.keras"
 )
 
-SCALER_FILE = (
+SCALER_PATH = (
     BASE_DIR / "RobustScaler.pkl"
 )
 
-SVM_FILE = (
+SVM_PATH = (
     BASE_DIR / "SVM_Classifier.pkl"
 )
 
@@ -94,64 +63,60 @@ SVM_FILE = (
 # IMAGE SETTINGS
 # ============================================================
 
-CT_VERIFIER_SIZE = (
-    224,
-    224
-)
+MODALITY_IMAGE_SIZE = (128, 128)
 
-GSFF_IMAGE_SIZE = (
-    224,
-    224
-)
+GSFF_IMAGE_SIZE = (224, 224)
 
 
 # ============================================================
 # CLASS NAMES
 # ============================================================
 
-class_names = [
+LUNG_CLASS_NAMES = [
     "Normal",
     "Benign",
     "Malignant"
 ]
 
 
-# ============================================================
-# CT VERIFIER SETTINGS
-# ============================================================
-#
 # IMPORTANT:
+# This MUST match the class_mapping printed during training.
 #
-# This assumes your CT_Verifier.keras is a binary classifier.
+# Your trained CT_Verifier showed:
 #
-# Expected:
-#
-# class 0 = CT
-# class 1 = Non-CT
-#
-# If your verifier was trained with the opposite labels,
-# change CT_CLASS_INDEX below.
-#
+# 0 = CHEST_XRAY
+# 1 = CT
+# 2 = MRI
+
+MODALITY_CLASS_NAMES = [
+    "CHEST_XRAY",
+    "CT",
+    "MRI"
+]
+
+
+# ============================================================
+# CT ACCEPTANCE THRESHOLD
 # ============================================================
 
-CT_CLASS_INDEX = 0
+# The modality classifier must identify the image as CT
+# with at least this confidence.
+#
+# 0.70 = 70%
 
-CT_VERIFIER_THRESHOLD = 0.50
+CT_THRESHOLD = 0.70
 
 
 # ============================================================
 # CHECK REQUIRED FILE
 # ============================================================
 
-def check_file(
-    path,
-    name
-):
+def check_file(path, file_description):
 
     if not path.exists():
 
         st.error(
-            f"❌ {name} was not found."
+            f"❌ {file_description} was not found."
         )
 
         st.code(
@@ -164,7 +129,7 @@ def check_file(
     if path.stat().st_size == 0:
 
         st.error(
-            f"❌ {name} is empty."
+            f"❌ {file_description} is empty."
         )
 
         st.code(
@@ -175,151 +140,28 @@ def check_file(
 
 
 # ============================================================
-# CHECK MODEL FILES
+# CHECK ALL MODEL FILES
 # ============================================================
 
 check_file(
-    CT_VERIFIER_FILE,
-    "CT_Verifier.keras"
+    CT_VERIFIER_PATH,
+    "CT modality verifier"
 )
 
 check_file(
-    SCALER_FILE,
-    "RobustScaler.pkl"
+    FEATURE_EXTRACTOR_PATH,
+    "GSFF feature extractor"
 )
 
 check_file(
-    SVM_FILE,
-    "SVM_Classifier.pkl"
+    SCALER_PATH,
+    "RobustScaler"
 )
 
-
-# ============================================================
-# GSDP LAYER
-# ============================================================
-#
-# Global Standard Deviation Pooling
-#
-# Input:
-#     14 × 14 × 112
-#
-# Output:
-#     112
-#
-# NO Lambda
-# NO K
-# ============================================================
-
-class GSDP(Layer):
-
-    def call(
-        self,
-        inputs
-    ):
-
-        return tf.math.reduce_std(
-            inputs,
-            axis=[1, 2]
-        )
-
-
-# ============================================================
-# BUILD GSFF FEATURE EXTRACTOR
-# ============================================================
-
-@st.cache_resource
-def build_feature_extractor():
-
-    # --------------------------------------------------------
-    # EfficientNetB0
-    # --------------------------------------------------------
-
-    base_model = EfficientNetB0(
-        weights="imagenet",
-        include_top=False,
-        input_shape=(
-            224,
-            224,
-            3
-        )
-    )
-
-
-    # --------------------------------------------------------
-    # Freeze EfficientNet
-    # --------------------------------------------------------
-
-    for layer in base_model.layers:
-
-        layer.trainable = False
-
-
-    # --------------------------------------------------------
-    # block5c_add
-    # --------------------------------------------------------
-
-    feature_map = (
-        base_model
-        .get_layer(
-            "block5c_add"
-        )
-        .output
-    )
-
-
-    # --------------------------------------------------------
-    # GAP
-    # --------------------------------------------------------
-
-    gap = GlobalAveragePooling2D(
-        name="GAP"
-    )(
-        feature_map
-    )
-
-
-    # --------------------------------------------------------
-    # GSDP
-    # --------------------------------------------------------
-
-    gsdp = GSDP(
-        name="GSDP"
-    )(
-        feature_map
-    )
-
-
-    # --------------------------------------------------------
-    # GSFF
-    #
-    # GAP  = 112
-    # GSDP = 112
-    #
-    # Total = 224
-    # --------------------------------------------------------
-
-    gsff = Concatenate(
-        name="GSFF_Fusion"
-    )(
-        [
-            gap,
-            gsdp
-        ]
-    )
-
-
-    # --------------------------------------------------------
-    # Model
-    # --------------------------------------------------------
-
-    feature_extractor = Model(
-        inputs=base_model.input,
-        outputs=gsff,
-        name="GSFF_Feature_Extractor"
-    )
-
-
-    return feature_extractor
+check_file(
+    SVM_PATH,
+    "SVM classifier"
+)
 
 
 # ============================================================
@@ -330,9 +172,30 @@ def build_feature_extractor():
 def load_ct_verifier():
 
     model = tf.keras.models.load_model(
-        str(CT_VERIFIER_FILE),
-        compile=False,
-        safe_mode=False
+        str(CT_VERIFIER_PATH),
+        compile=False
+    )
+
+    return model
+
+
+# ============================================================
+# LOAD GSFF FEATURE EXTRACTOR
+# ============================================================
+
+@st.cache_resource
+def load_feature_extractor():
+
+    # IMPORTANT:
+    #
+    # This file was already trained and saved.
+    # We DO NOT create any Lambda layer here.
+    #
+    # Therefore app.py does not depend on K.
+
+    model = tf.keras.models.load_model(
+        str(FEATURE_EXTRACTOR_PATH),
+        compile=False
     )
 
     return model
@@ -346,7 +209,7 @@ def load_ct_verifier():
 def load_scaler():
 
     scaler = joblib.load(
-        str(SCALER_FILE)
+        str(SCALER_PATH)
     )
 
     return scaler
@@ -360,7 +223,7 @@ def load_scaler():
 def load_svm():
 
     svm = joblib.load(
-        str(SVM_FILE)
+        str(SVM_PATH)
     )
 
     return svm
@@ -372,23 +235,67 @@ def load_svm():
 
 try:
 
-    ct_verifier = (
-        load_ct_verifier()
-    )
-
-    feature_extractor = (
-        build_feature_extractor()
-    )
-
-    scaler = load_scaler()
-
-    svm = load_svm()
-
+    ct_verifier = load_ct_verifier()
 
 except Exception as e:
 
     st.error(
-        "❌ Model loading failed."
+        "❌ CT verifier model loading failed."
+    )
+
+    st.error(
+        "Please make sure CT_Verifier.keras "
+        "was uploaded correctly to GitHub."
+    )
+
+    st.exception(e)
+
+    st.stop()
+
+
+try:
+
+    feature_extractor = load_feature_extractor()
+
+except Exception as e:
+
+    st.error(
+        "❌ GSFF feature extractor loading failed."
+    )
+
+    st.error(
+        "Please make sure GSFF_Feature_Extractor.keras "
+        "is the same model used during training."
+    )
+
+    st.exception(e)
+
+    st.stop()
+
+
+try:
+
+    scaler = load_scaler()
+
+except Exception as e:
+
+    st.error(
+        "❌ RobustScaler loading failed."
+    )
+
+    st.exception(e)
+
+    st.stop()
+
+
+try:
+
+    svm = load_svm()
+
+except Exception as e:
+
+    st.error(
+        "❌ SVM classifier loading failed."
     )
 
     st.exception(e)
@@ -397,591 +304,362 @@ except Exception as e:
 
 
 # ============================================================
-# VERIFY GSFF DIMENSION
+# VERIFY CT VERIFIER OUTPUT
 # ============================================================
 
-if feature_extractor.output_shape[-1] != 224:
+try:
+
+    modality_output_shape = (
+        ct_verifier.output_shape
+    )
+
+    if modality_output_shape[-1] != 3:
+
+        st.error(
+            "❌ CT verifier output mismatch."
+        )
+
+        st.write(
+            "Expected output: 3 classes"
+        )
+
+        st.write(
+            f"Actual output: {modality_output_shape}"
+        )
+
+        st.stop()
+
+except Exception as e:
 
     st.error(
-        "❌ GSFF feature dimension mismatch."
+        "❌ Could not verify CT verifier output."
     )
 
-    st.write(
-        "Expected: 224"
-    )
-
-    st.write(
-        f"Actual: "
-        f"{feature_extractor.output_shape[-1]}"
-    )
+    st.exception(e)
 
     st.stop()
 
 
 # ============================================================
-# VERIFY SCALER DIMENSION
+# VERIFY GSFF FEATURE DIMENSION
 # ============================================================
 
-if hasattr(
-    scaler,
-    "n_features_in_"
-):
+try:
 
-    if scaler.n_features_in_ != 224:
+    feature_output_shape = (
+        feature_extractor.output_shape
+    )
 
-        st.error(
-            "❌ RobustScaler dimension mismatch."
-        )
+    feature_dimension = (
+        feature_output_shape[-1]
+    )
 
-        st.write(
-            "Expected: 224"
-        )
+    st.sidebar.success(
+        f"GSFF feature dimension: "
+        f"{feature_dimension}"
+    )
 
-        st.write(
-            f"Actual: "
-            f"{scaler.n_features_in_}"
-        )
+except Exception:
 
-        st.stop()
-
-
-# ============================================================
-# VERIFY SVM DIMENSION
-# ============================================================
-
-if hasattr(
-    svm,
-    "n_features_in_"
-):
-
-    if svm.n_features_in_ != 224:
-
-        st.error(
-            "❌ SVM dimension mismatch."
-        )
-
-        st.write(
-            "Expected: 224"
-        )
-
-        st.write(
-            f"Actual: "
-            f"{svm.n_features_in_}"
-        )
-
-        st.stop()
-
-
-# ============================================================
-# COLOUR IMAGE DETECTION
-# ============================================================
-
-def is_colour_image(
-    image
-):
-
-    # --------------------------------------------------------
-    # Explicit colour modes
-    # --------------------------------------------------------
-
-    if image.mode in [
-        "RGB",
-        "RGBA",
-        "CMYK",
-        "HSV",
-        "YCbCr"
-    ]:
-
-        rgb = image.convert(
-            "RGB"
-        )
-
-        array = np.asarray(
-            rgb,
-            dtype=np.float32
-        )
-
-        r = array[:, :, 0]
-        g = array[:, :, 1]
-        b = array[:, :, 2]
-
-        difference = np.mean(
-            np.abs(r - g)
-            +
-            np.abs(g - b)
-            +
-            np.abs(r - b)
-        )
-
-        if difference > 3.0:
-
-            return True
-
-
-    # --------------------------------------------------------
-    # Palette image
-    # --------------------------------------------------------
-
-    if image.mode == "P":
-
-        rgb = image.convert(
-            "RGB"
-        )
-
-        array = np.asarray(
-            rgb,
-            dtype=np.float32
-        )
-
-        r = array[:, :, 0]
-        g = array[:, :, 1]
-        b = array[:, :, 2]
-
-        difference = np.mean(
-            np.abs(r - g)
-            +
-            np.abs(g - b)
-            +
-            np.abs(r - b)
-        )
-
-        if difference > 3.0:
-
-            return True
-
-
-    return False
+    feature_dimension = None
 
 
 # ============================================================
 # IMAGE VALIDATION
 # ============================================================
 
-def validate_image(
-    image
-):
+def validate_image(image):
+    """
+    Performs basic input validation.
+
+    The system rejects:
+    1. Clearly colored images
+    2. Very small images
+    3. Blank / nearly blank images
+    4. Almost completely black images
+    5. Almost completely white images
+
+    CT/MRI/X-ray discrimination is performed separately
+    by CT_Verifier.keras.
+    """
 
     # --------------------------------------------------------
-    # COLOUR CHECK
+    # Original image information
     # --------------------------------------------------------
 
-    if is_colour_image(
-        image
-    ):
+    original_mode = image.mode
+
+    # --------------------------------------------------------
+    # Check image channels
+    # --------------------------------------------------------
+
+    rgb_image = image.convert("RGB")
+
+    rgb_array = np.asarray(
+        rgb_image,
+        dtype=np.float32
+    )
+
+    r = rgb_array[:, :, 0]
+    g = rgb_array[:, :, 1]
+    b = rgb_array[:, :, 2]
+
+    # --------------------------------------------------------
+    # Calculate color difference
+    # --------------------------------------------------------
+
+    rg_difference = np.mean(
+        np.abs(r - g)
+    )
+
+    gb_difference = np.mean(
+        np.abs(g - b)
+    )
+
+    rb_difference = np.mean(
+        np.abs(r - b)
+    )
+
+    color_difference = (
+        rg_difference
+        + gb_difference
+        + rb_difference
+    )
+
+    # --------------------------------------------------------
+    # Reject clearly colored image
+    # --------------------------------------------------------
+
+    if color_difference > 10:
 
         return (
             False,
-            "colour"
+            "❌ Rejected: Colored images are not supported."
         )
 
-
     # --------------------------------------------------------
-    # SIZE CHECK
-    # --------------------------------------------------------
-
-    width, height = (
-        image.size
-    )
-
-
-    if (
-        width < 64
-        or
-        height < 64
-    ):
-
-        return (
-            False,
-            "small"
-        )
-
-
-    # --------------------------------------------------------
-    # GRAYSCALE CHECK
+    # Convert to grayscale
     # --------------------------------------------------------
 
-    gray = image.convert(
-        "L"
-    )
+    gray = image.convert("L")
 
-
-    array = np.asarray(
+    gray_array = np.asarray(
         gray,
         dtype=np.float32
     )
 
-
     # --------------------------------------------------------
-    # STANDARD DEVIATION
+    # Image dimensions
     # --------------------------------------------------------
 
-    std = np.std(
-        array
-    )
+    width, height = gray.size
 
-
-    if std < 5:
+    if width < 64 or height < 64:
 
         return (
             False,
-            "blank"
+            "❌ Rejected: Image resolution is too small."
         )
 
+    # --------------------------------------------------------
+    # Intensity statistics
+    # --------------------------------------------------------
+
+    mean_intensity = np.mean(
+        gray_array
+    )
+
+    std_intensity = np.std(
+        gray_array
+    )
 
     # --------------------------------------------------------
-    # ALMOST COMPLETELY BLACK
+    # Blank image check
+    # --------------------------------------------------------
+
+    if std_intensity < 8:
+
+        return (
+            False,
+            "❌ Rejected: Image appears blank or invalid."
+        )
+
+    # --------------------------------------------------------
+    # Dark / bright ratio
     # --------------------------------------------------------
 
     dark_ratio = np.mean(
-        array < 10
+        gray_array < 10
     )
 
+    bright_ratio = np.mean(
+        gray_array > 245
+    )
+
+    # --------------------------------------------------------
+    # Almost completely black/white
+    # --------------------------------------------------------
 
     if dark_ratio > 0.98:
 
         return (
             False,
-            "black"
+            "❌ Rejected: Image is almost completely black."
         )
-
-
-    # --------------------------------------------------------
-    # ALMOST COMPLETELY WHITE
-    # --------------------------------------------------------
-
-    bright_ratio = np.mean(
-        array > 245
-    )
-
 
     if bright_ratio > 0.98:
 
         return (
             False,
-            "white"
+            "❌ Rejected: Image is almost completely white."
         )
 
+    # --------------------------------------------------------
+    # Passed basic validation
+    # --------------------------------------------------------
 
     return (
         True,
-        "valid"
+        "✅ Image passed basic image validation."
     )
 
 
 # ============================================================
-# PREPROCESS FOR CT VERIFIER
+# PREPROCESS FOR MODALITY CLASSIFIER
 # ============================================================
 
-def preprocess_for_ct_verifier(
-    image
-):
+def preprocess_for_modality(image):
 
-    # --------------------------------------------------------
-    # CT verifier receives grayscale replicated into RGB
-    # --------------------------------------------------------
+    # Convert grayscale-like input to RGB.
+    #
+    # This does NOT turn a colored image into an accepted
+    # image because validate_image() already rejects
+    # clearly colored images.
 
-    gray = image.convert(
-        "L"
-    )
+    image = image.convert("RGB")
 
-
-    gray = gray.resize(
-        CT_VERIFIER_SIZE,
+    image = image.resize(
+        MODALITY_IMAGE_SIZE,
         Image.Resampling.LANCZOS
     )
 
-
-    array = np.asarray(
-        gray,
+    image_array = np.asarray(
+        image,
         dtype=np.float32
     )
 
+    # Same preprocessing used during modality training:
+    #
+    # rescale = 1 / 255
 
-    # --------------------------------------------------------
-    # Grayscale → RGB
-    # --------------------------------------------------------
+    image_array /= 255.0
 
-    array = np.stack(
-        [
-            array,
-            array,
-            array
-        ],
-        axis=-1
-    )
-
-
-    # --------------------------------------------------------
-    # Batch dimension
-    # --------------------------------------------------------
-
-    array = np.expand_dims(
-        array,
+    image_array = np.expand_dims(
+        image_array,
         axis=0
     )
 
-
-    # --------------------------------------------------------
-    # IMPORTANT:
-    #
-    # Do NOT divide by 255 unless your CT verifier
-    # was trained with /255 preprocessing.
-    #
-    # Change this only if your verifier training code
-    # explicitly used image_array / 255.0.
-    # --------------------------------------------------------
-
-    return array
+    return image_array
 
 
 # ============================================================
 # PREPROCESS FOR GSFF
 # ============================================================
 
-def preprocess_for_gsff(
-    image
-):
+def preprocess_for_gsff(image):
 
-    # --------------------------------------------------------
-    # Grayscale
-    # --------------------------------------------------------
+    image = image.convert("RGB")
 
-    gray = image.convert(
-        "L"
-    )
-
-
-    # --------------------------------------------------------
-    # Resize
-    # --------------------------------------------------------
-
-    gray = gray.resize(
+    image = image.resize(
         GSFF_IMAGE_SIZE,
         Image.Resampling.LANCZOS
     )
 
-
-    # --------------------------------------------------------
-    # NumPy
-    # --------------------------------------------------------
-
-    array = np.asarray(
-        gray,
+    image_array = np.asarray(
+        image,
         dtype=np.float32
     )
 
-
     # --------------------------------------------------------
-    # Grayscale → RGB
+    # IMPORTANT
+    #
+    # Your training code used:
+    #
+    # X = preprocess_input(...)
+    #
+    # Therefore we reproduce that preprocessing here.
+    # EfficientNet's preprocessing is imported directly
+    # instead of creating any Lambda layer.
     # --------------------------------------------------------
 
-    array = np.stack(
-        [
-            array,
-            array,
-            array
-        ],
-        axis=-1
+    from tensorflow.keras.applications.efficientnet import (
+        preprocess_input
     )
 
+    image_array = preprocess_input(
+        image_array
+    )
 
-    # --------------------------------------------------------
-    # Batch dimension
-    # --------------------------------------------------------
-
-    array = np.expand_dims(
-        array,
+    image_array = np.expand_dims(
+        image_array,
         axis=0
     )
 
-
-    # --------------------------------------------------------
-    # IMPORTANT:
-    #
-    # EfficientNetB0 in current TensorFlow/Keras includes
-    # its own Rescaling layer and expects [0,255] inputs.
-    #
-    # Therefore no /255 here.
-    # --------------------------------------------------------
-
-    return array
+    return image_array
 
 
 # ============================================================
-# CT VERIFICATION
+# CT / MRI / X-RAY VERIFICATION
 # ============================================================
 
-def verify_ct_image(
-    image
-):
+def verify_modality(image):
 
-    array = (
-        preprocess_for_ct_verifier(
-            image
-        )
+    image_array = preprocess_for_modality(
+        image
     )
 
-
-    prediction = (
-        ct_verifier.predict(
-            array,
-            verbose=0
-        )
+    predictions = ct_verifier.predict(
+        image_array,
+        verbose=0
     )
 
-
-    prediction = np.asarray(
-        prediction
+    probabilities = np.asarray(
+        predictions[0],
+        dtype=np.float32
     )
 
+    # Safety normalization
 
-    # ========================================================
-    # CASE 1
-    # Binary sigmoid output
-    #
-    # [[0.83]]
-    # ========================================================
+    probability_sum = np.sum(
+        probabilities
+    )
 
-    if (
-        prediction.ndim == 2
-        and
-        prediction.shape[1] == 1
-    ):
-
-        probability = float(
-            prediction[0][0]
-        )
-
-
-        probability = float(
-            np.clip(
-                probability,
-                0.0,
-                1.0
-            )
-        )
-
-
-        # ----------------------------------------------------
-        # ASSUMPTION:
-        #
-        # sigmoid 1 = CT
-        # sigmoid 0 = Non-CT
-        #
-        # If your training labels are reversed,
-        # change CT_SIGMOID_MEANS_CT below.
-        # ----------------------------------------------------
-
-        CT_SIGMOID_MEANS_CT = True
-
-
-        if CT_SIGMOID_MEANS_CT:
-
-            ct_probability = (
-                probability
-            )
-
-            non_ct_probability = (
-                1.0 - probability
-            )
-
-        else:
-
-            non_ct_probability = (
-                probability
-            )
-
-            ct_probability = (
-                1.0 - probability
-            )
-
-
-        is_ct = (
-            ct_probability
-            >=
-            CT_VERIFIER_THRESHOLD
-        )
-
-
-        return (
-            is_ct,
-            ct_probability,
-            non_ct_probability
-        )
-
-
-    # ========================================================
-    # CASE 2
-    # Two-class softmax
-    #
-    # [[0.90, 0.10]]
-    # ========================================================
-
-    if (
-        prediction.ndim == 2
-        and
-        prediction.shape[1] == 2
-    ):
+    if probability_sum > 0:
 
         probabilities = (
-            prediction[0]
+            probabilities
+            / probability_sum
         )
 
+    predicted_index = int(
+        np.argmax(probabilities)
+    )
 
-        probabilities = np.asarray(
-            probabilities,
-            dtype=np.float32
-        )
+    confidence = float(
+        probabilities[predicted_index]
+    )
 
+    predicted_modality = (
+        MODALITY_CLASS_NAMES[
+            predicted_index
+        ]
+    )
 
-        # ----------------------------------------------------
-        # Class 0 = CT
-        # Class 1 = Non-CT
-        # ----------------------------------------------------
-
-        ct_probability = float(
-            probabilities[
-                CT_CLASS_INDEX
-            ]
-        )
-
-
-        non_ct_index = (
-            1
-            -
-            CT_CLASS_INDEX
-        )
-
-
-        non_ct_probability = float(
-            probabilities[
-                non_ct_index
-            ]
-        )
-
-
-        is_ct = (
-            ct_probability
-            >=
-            CT_VERIFIER_THRESHOLD
-        )
-
-
-        return (
-            is_ct,
-            ct_probability,
-            non_ct_probability
-        )
-
-
-    # ========================================================
-    # Unsupported output
-    # ========================================================
-
-    raise ValueError(
-        "Unsupported CT verifier output shape: "
-        f"{prediction.shape}. "
-        "Expected (1,1) sigmoid or (1,2) softmax."
+    return (
+        predicted_modality,
+        predicted_index,
+        confidence,
+        probabilities
     )
 
 
@@ -989,129 +667,186 @@ def verify_ct_image(
 # GSFF-SVM PREDICTION
 # ============================================================
 
-def predict_image(
-    image
-):
+def predict_lung_cancer(image):
 
     # --------------------------------------------------------
-    # Preprocess
+    # Prepare image
     # --------------------------------------------------------
 
-    image_array = (
-        preprocess_for_gsff(
-            image
-        )
+    image_array = preprocess_for_gsff(
+        image
     )
-
 
     # --------------------------------------------------------
     # GSFF FEATURE EXTRACTION
     # --------------------------------------------------------
 
-    features = (
-        feature_extractor.predict(
-            image_array,
-            verbose=0
-        )
+    features = feature_extractor.predict(
+        image_array,
+        verbose=0
     )
 
-
-    # --------------------------------------------------------
-    # Confirm 224 features
-    # --------------------------------------------------------
-
-    if features.shape[1] != 224:
-
-        raise ValueError(
-            "Expected 224 GSFF features, "
-            f"but received {features.shape[1]}."
-        )
-
+    features = np.asarray(
+        features,
+        dtype=np.float32
+    )
 
     # --------------------------------------------------------
     # RobustScaler
     # --------------------------------------------------------
 
-    scaled_features = (
-        scaler.transform(
-            features
-        )
+    scaled_features = scaler.transform(
+        features
     )
-
 
     # --------------------------------------------------------
     # SVM prediction
     # --------------------------------------------------------
 
-    predicted_index = int(
-        svm.predict(
-            scaled_features
-        )[0]
+    prediction = svm.predict(
+        scaled_features
     )
 
+    predicted_index = int(
+        prediction[0]
+    )
 
     # --------------------------------------------------------
     # SVM probabilities
     # --------------------------------------------------------
 
-    probabilities = (
-        svm.predict_proba(
-            scaled_features
-        )[0]
+    probabilities = svm.predict_proba(
+        scaled_features
+    )[0]
+
+    probabilities = np.asarray(
+        probabilities,
+        dtype=np.float32
     )
-
-
-    # --------------------------------------------------------
-    # Class
-    # --------------------------------------------------------
 
     predicted_class = (
-        class_names[
+        LUNG_CLASS_NAMES[
             predicted_index
         ]
     )
-
-
-    # --------------------------------------------------------
-    # Confidence
-    # --------------------------------------------------------
 
     confidence = float(
-        probabilities[
-            predicted_index
-        ]
-        *
-        100
+        probabilities[predicted_index]
     )
-
 
     return (
         predicted_class,
+        predicted_index,
         confidence,
-        probabilities
+        probabilities,
+        features
     )
 
 
 # ============================================================
-# HEADER
+# PAGE HEADER
 # ============================================================
 
 st.title(
     "🫁 GSFF-SVM Lung Cancer Detection"
 )
 
-
 st.write(
-    "A lightweight deep learning and machine learning "
-    "framework for classification of lung CT images."
+    "A deep learning and machine learning based "
+    "lung CT image classification system."
 )
-
 
 st.info(
     "Only grayscale CT images are accepted. "
-    "Colour images and images classified as non-CT "
-    "by the CT verification model are rejected."
+    "Chest X-ray, MRI, and colored images are rejected."
 )
+
+
+# ============================================================
+# SIDEBAR
+# ============================================================
+
+with st.sidebar:
+
+    st.header(
+        "🫁 GSFF-SVM Framework"
+    )
+
+    st.write(
+        """
+        Input Image
+        ↓
+        Image Validation
+        ↓
+        CT / X-ray / MRI Verification
+        ↓
+        CT Only
+        ↓
+        EfficientNetB0
+        ↓
+        Block5c
+        ↓
+        GAP + GSDP
+        ↓
+        GSFF Fusion
+        ↓
+        RobustScaler
+        ↓
+        RBF-SVM
+        ↓
+        Classification
+        """
+    )
+
+    st.divider()
+
+    st.write(
+        "**Modality Classes:**"
+    )
+
+    st.write(
+        "0 — Chest X-ray"
+    )
+
+    st.write(
+        "1 — CT"
+    )
+
+    st.write(
+        "2 — MRI"
+    )
+
+    st.divider()
+
+    st.write(
+        f"**CT acceptance threshold:** "
+        f"{CT_THRESHOLD * 100:.0f}%"
+    )
+
+    st.divider()
+
+    st.write(
+        "**Lung Classes:**"
+    )
+
+    st.write(
+        "Normal"
+    )
+
+    st.write(
+        "Benign"
+    )
+
+    st.write(
+        "Malignant"
+    )
+
+    st.divider()
+
+    st.caption(
+        "Research prototype. "
+        "Not intended for clinical diagnosis."
+    )
 
 
 # ============================================================
@@ -1119,53 +854,52 @@ st.info(
 # ============================================================
 
 with st.expander(
-    "🔬 Model Information"
+    "ℹ️ Model Information"
 ):
 
     st.write(
-        "**CT Verification:** "
-        "CT_Verifier.keras"
+        "CT verifier: 3-class modality classifier"
     )
 
     st.write(
-        "**Feature Extractor:** EfficientNetB0"
+        "Modality input: 128 × 128 × 3"
     )
 
     st.write(
-        "**Truncation:** block5c_add"
+        "Modality classes: Chest X-ray, CT, MRI"
     )
 
     st.write(
-        "**Feature Map:** 14 × 14 × 112"
+        "GSFF input: 224 × 224 × 3"
     )
 
     st.write(
-        "**Pooling:** GAP + GSDP"
+        "EfficientNetB0 truncation: block5c_add"
     )
 
     st.write(
-        "**GSFF Dimension:** 224"
+        "Feature fusion: GAP + GSDP"
     )
 
     st.write(
-        "**Feature Scaling:** RobustScaler"
+        "Feature dimension: 224"
     )
 
     st.write(
-        "**Classifier:** RBF-SVM"
+        "Scaler: RobustScaler"
     )
 
     st.write(
-        "**Classes:** Normal, Benign, Malignant"
+        "Classifier: RBF-SVM"
     )
 
 
 # ============================================================
-# UPLOAD IMAGE
+# FILE UPLOADER
 # ============================================================
 
 uploaded_file = st.file_uploader(
-    "Upload Lung CT Image",
+    "📤 Upload Lung CT Image",
     type=[
         "jpg",
         "jpeg",
@@ -1182,218 +916,204 @@ uploaded_file = st.file_uploader(
 
 if uploaded_file is not None:
 
-    try:
+    # ========================================================
+    # READ IMAGE
+    # ========================================================
 
-        # ----------------------------------------------------
-        # LOAD IMAGE
-        # ----------------------------------------------------
+    try:
 
         image = Image.open(
             uploaded_file
         )
 
-
         image.load()
 
+    except Exception as e:
 
-        # ----------------------------------------------------
-        # DISPLAY IMAGE
-        # ----------------------------------------------------
-
-        st.subheader(
-            "Uploaded Image"
+        st.error(
+            "❌ Unable to read the uploaded image."
         )
 
+        st.exception(e)
 
-        st.image(
-            image,
-            caption="Uploaded Image",
-            use_container_width=True
+        st.stop()
+
+
+    # ========================================================
+    # DISPLAY IMAGE
+    # ========================================================
+
+    st.subheader(
+        "📷 Uploaded Image"
+    )
+
+    st.image(
+        image,
+        caption="Uploaded Image",
+        use_container_width=True
+    )
+
+
+    # ========================================================
+    # BASIC VALIDATION
+    # ========================================================
+
+    is_valid, validation_message = (
+        validate_image(image)
+    )
+
+
+    if not is_valid:
+
+        st.error(
+            validation_message
         )
 
+        st.warning(
+            "Please upload a grayscale medical CT image."
+        )
+
+        st.stop()
+
+
+    st.success(
+        validation_message
+    )
+
+
+    # ========================================================
+    # DETECTION BUTTON
+    # ========================================================
+
+    if st.button(
+        "🔍 Detect Lung Condition",
+        use_container_width=True
+    ):
 
         # ====================================================
-        # STEP 1
-        # COLOUR + BASIC VALIDATION
-        # ====================================================
-
-        st.subheader(
-            "Step 1 — Image Validation"
-        )
-
-
-        (
-            valid,
-            reason
-        ) = validate_image(
-            image
-        )
-
-
-        if not valid:
-
-            if reason == "colour":
-
-                st.error(
-                    "❌ REJECTED: Colour images "
-                    "are not supported."
-                )
-
-
-            elif reason == "small":
-
-                st.error(
-                    "❌ REJECTED: Image resolution "
-                    "is too small."
-                )
-
-
-            elif reason == "blank":
-
-                st.error(
-                    "❌ REJECTED: Image appears "
-                    "blank or invalid."
-                )
-
-
-            elif reason == "black":
-
-                st.error(
-                    "❌ REJECTED: Image is almost "
-                    "completely black."
-                )
-
-
-            elif reason == "white":
-
-                st.error(
-                    "❌ REJECTED: Image is almost "
-                    "completely white."
-                )
-
-
-            st.warning(
-                "Please upload a grayscale lung CT image."
-            )
-
-
-            st.stop()
-
-
-        st.success(
-            "✅ Grayscale image validation passed."
-        )
-
-
-        # ====================================================
-        # STEP 2
-        # CT VERIFICATION
+        # STEP 1 — MODALITY VERIFICATION
         # ====================================================
 
         st.subheader(
-            "Step 2 — CT Image Verification"
+            "Step 1 — Image Modality Verification"
         )
-
 
         with st.spinner(
-            "Verifying whether the image is a CT scan..."
+            "Checking whether the image is CT, X-ray, or MRI..."
         ):
 
-            (
-                is_ct,
-                ct_probability,
-                non_ct_probability
-            ) = verify_ct_image(
-                image
-            )
-
-
-        # ----------------------------------------------------
-        # DISPLAY CT PROBABILITIES
-        # ----------------------------------------------------
-
-        col1, col2 = st.columns(
-            2
-        )
-
-
-        with col1:
-
-            st.metric(
-                "CT Probability",
-                f"{ct_probability * 100:.2f}%"
-            )
-
-
-        with col2:
-
-            st.metric(
-                "Non-CT Probability",
-                f"{non_ct_probability * 100:.2f}%"
-            )
-
-
-        # ====================================================
-        # NON-CT → REJECT
-        # ====================================================
-
-        if not is_ct:
-
-            st.error(
-                "❌ REJECTED — The uploaded image "
-                "was classified as NON-CT."
-            )
-
-
-            st.warning(
-                "X-ray, MRI, or other non-CT images "
-                "are not accepted by this system."
-            )
-
-
-            st.stop()
-
-
-        # ====================================================
-        # CT VERIFIED
-        # ====================================================
-
-        st.success(
-            "✅ CT image verified."
-        )
-
-
-        # ====================================================
-        # STEP 3
-        # GSFF-SVM CLASSIFICATION
-        # ====================================================
-
-        st.subheader(
-            "Step 3 — Lung Cancer Classification"
-        )
-
-
-        if st.button(
-            "🔍 Detect Lung Condition",
-            use_container_width=True
-        ):
-
-            with st.spinner(
-                "Analyzing CT image..."
-            ):
+            try:
 
                 (
-                    predicted_class,
-                    confidence,
-                    probabilities
-                ) = predict_image(
+                    modality,
+                    modality_index,
+                    modality_confidence,
+                    modality_probabilities
+                ) = verify_modality(
                     image
                 )
 
+            except Exception as e:
 
-            # =================================================
+                st.error(
+                    "❌ CT modality verification failed."
+                )
+
+                st.exception(e)
+
+                st.stop()
+
+
+        # ====================================================
+        # SHOW MODALITY PROBABILITIES
+        # ====================================================
+
+        st.write(
+            "**Modality probability estimates:**"
+        )
+
+        for i, modality_name in enumerate(
+            MODALITY_CLASS_NAMES
+        ):
+
+            probability = float(
+                modality_probabilities[i]
+            )
+
+            st.write(
+                f"**{modality_name}: "
+                f"{probability * 100:.2f}%**"
+            )
+
+            st.progress(
+                min(
+                    max(
+                        probability,
+                        0.0
+                    ),
+                    1.0
+                )
+            )
+
+
+        # ====================================================
+        # CT ACCEPTANCE DECISION
+        # ====================================================
+
+        if (
+            modality == "CT"
+            and modality_confidence >= CT_THRESHOLD
+        ):
+
+            st.success(
+                f"✅ CT scan verified "
+                f"({modality_confidence * 100:.2f}% confidence)"
+            )
+
+            st.write(
+                "The image has passed the modality "
+                "verification stage."
+            )
+
+
+            # ================================================
+            # STEP 2 — GSFF-SVM
+            # ================================================
+
+            st.subheader(
+                "Step 2 — GSFF-SVM Lung Cancer Classification"
+            )
+
+            with st.spinner(
+                "Extracting GSFF features and analyzing CT image..."
+            ):
+
+                try:
+
+                    (
+                        predicted_class,
+                        predicted_index,
+                        confidence,
+                        probabilities,
+                        features
+                    ) = predict_lung_cancer(
+                        image
+                    )
+
+                except Exception as e:
+
+                    st.error(
+                        "❌ Lung cancer prediction failed."
+                    )
+
+                    st.exception(e)
+
+                    st.stop()
+
+
+            # ================================================
             # RESULT
-            # =================================================
+            # ================================================
 
             st.subheader(
                 "🎯 Prediction Result"
@@ -1406,13 +1126,11 @@ if uploaded_file is not None:
                     f"Prediction: **{predicted_class}**"
                 )
 
-
             elif predicted_class == "Benign":
 
                 st.warning(
                     f"Prediction: **{predicted_class}**"
                 )
-
 
             else:
 
@@ -1421,19 +1139,19 @@ if uploaded_file is not None:
                 )
 
 
-            # =================================================
+            # ================================================
             # CONFIDENCE
-            # =================================================
+            # ================================================
 
             st.metric(
                 "Prediction Confidence",
-                f"{confidence:.2f}%"
+                f"{confidence * 100:.2f}%"
             )
 
 
-            # =================================================
-            # PROBABILITIES
-            # =================================================
+            # ================================================
+            # CLASS PROBABILITIES
+            # ================================================
 
             st.subheader(
                 "📊 Class Probability Estimates"
@@ -1441,148 +1159,122 @@ if uploaded_file is not None:
 
 
             for i, class_name in enumerate(
-                class_names
+                LUNG_CLASS_NAMES
             ):
 
                 probability = float(
                     probabilities[i]
                 )
 
-
                 st.write(
                     f"**{class_name}: "
                     f"{probability * 100:.2f}%**"
                 )
 
-
                 st.progress(
-                    probability
+                    min(
+                        max(
+                            probability,
+                            0.0
+                        ),
+                        1.0
+                    )
                 )
 
 
-            # =================================================
+            # ================================================
+            # TECHNICAL INFORMATION
+            # ================================================
+
+            with st.expander(
+                "🔬 Technical Information"
+            ):
+
+                st.write(
+                    f"Verified modality: **{modality}**"
+                )
+
+                st.write(
+                    f"Modality confidence: "
+                    f"**{modality_confidence * 100:.2f}%**"
+                )
+
+                st.write(
+                    f"GSFF feature shape: "
+                    f"`{features.shape}`"
+                )
+
+                st.write(
+                    "Feature fusion: GAP + GSDP"
+                )
+
+                st.write(
+                    "Classifier: RBF-SVM"
+                )
+
+
+            # ================================================
             # DISCLAIMER
-            # =================================================
+            # ================================================
 
             st.info(
-                "This system is intended for research "
-                "and educational purposes only and is "
-                "not a substitute for professional "
+                "⚠️ This system is a research prototype "
+                "for educational and research purposes. "
+                "It is not intended to replace professional "
                 "medical diagnosis."
             )
 
 
-    except Exception as e:
+        else:
 
-        st.error(
-            "❌ An error occurred while processing "
-            "the uploaded image."
-        )
+            # =================================================
+            # REJECT NON-CT IMAGE
+            # =================================================
 
-        st.exception(e)
-
-
-# ============================================================
-# SIDEBAR
-# ============================================================
-
-with st.sidebar:
-
-    st.header(
-        "🫁 GSFF-SVM Framework"
-    )
+            st.error(
+                "❌ Image Rejected"
+            )
 
 
-    st.write(
-        """
-        Uploaded Image
-              ↓
-        Colour Check
-              ↓
-        CT Verifier
-              ↓
-        CT / Non-CT
-              ↓
-        EfficientNetB0
-              ↓
-        block5c_add
-              ↓
-        GAP + GSDP
-              ↓
-        GSFF
-              ↓
-        RobustScaler
-              ↓
-        RBF-SVM
-              ↓
-        Normal / Benign / Malignant
-        """
-    )
+            if modality == "CHEST_XRAY":
+
+                st.warning(
+                    "The uploaded image appears to be "
+                    "a Chest X-ray. Pneumonia/X-ray images "
+                    "are not supported by this system."
+                )
+
+            elif modality == "MRI":
+
+                st.warning(
+                    "The uploaded image appears to be "
+                    "an MRI scan. MRI images are not "
+                    "supported by this system."
+                )
+
+            elif modality == "CT":
+
+                st.warning(
+                    f"The image was classified as CT, "
+                    f"but the confidence "
+                    f"({modality_confidence * 100:.2f}%) "
+                    f"is below the required "
+                    f"{CT_THRESHOLD * 100:.0f}% threshold."
+                )
+
+            else:
+
+                st.warning(
+                    "The uploaded image could not be "
+                    "verified as a valid CT scan."
+                )
 
 
-    st.divider()
+            st.write(
+                "🚫 Lung cancer classification was "
+                "not performed."
+            )
 
-
-    st.write(
-        "**Input:**"
-    )
-
-    st.write(
-        "224 × 224 grayscale"
-    )
-
-
-    st.write(
-        "**Feature extraction:**"
-    )
-
-    st.write(
-        "EfficientNetB0 block5c_add"
-    )
-
-
-    st.write(
-        "**Feature fusion:**"
-    )
-
-    st.write(
-        "GAP + GSDP = 224 features"
-    )
-
-
-    st.write(
-        "**Classifier:**"
-    )
-
-    st.write(
-        "RBF-SVM"
-    )
-
-
-    st.divider()
-
-
-    st.write(
-        "**Classes:**"
-    )
-
-    st.write(
-        "Normal"
-    )
-
-    st.write(
-        "Benign"
-    )
-
-    st.write(
-        "Malignant"
-    )
-
-
-    st.divider()
-
-
-    st.caption(
-        "Research prototype. "
-        "Not intended for clinical diagnosis."
-    )
+            st.info(
+                "Please upload a grayscale lung CT image."
+            )
