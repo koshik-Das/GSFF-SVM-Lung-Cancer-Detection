@@ -3,6 +3,7 @@ import numpy as np
 import tensorflow as tf
 import joblib
 import keras.backend as K
+
 from PIL import Image
 from tensorflow.keras.applications.efficientnet import preprocess_input
 
@@ -25,32 +26,66 @@ st.set_page_config(
 @st.cache_resource
 def load_models():
 
+    # -----------------------------------------------------
+    # IMPORTANT:
+    # The saved GSFF feature extractor contains a Lambda
+    # layer that uses K (keras.backend).
+    #
+    # Passing K through custom_objects allows Keras to
+    # correctly reconstruct that Lambda layer.
+    # -----------------------------------------------------
+
     feature_extractor = tf.keras.models.load_model(
         "GSFF_Feature_Extractor.keras",
-        safe_mode=False
+        custom_objects={
+            "K": K
+        },
+        safe_mode=False,
+        compile=False
     )
+
+    # -----------------------------------------------------
+    # Load RobustScaler
+    # -----------------------------------------------------
 
     scaler = joblib.load(
         "RobustScaler.pkl"
     )
 
+    # -----------------------------------------------------
+    # Load trained RBF-SVM
+    # -----------------------------------------------------
+
     svm = joblib.load(
         "SVM_Classifier.pkl"
     )
 
-    return feature_extractor, scaler, svm
+    return (
+        feature_extractor,
+        scaler,
+        svm
+    )
 
+
+# =========================================================
+# INITIALIZE MODELS
+# =========================================================
 
 try:
-    feature_extractor, scaler, svm = load_models()
+
+    (
+        feature_extractor,
+        scaler,
+        svm
+    ) = load_models()
 
 except Exception as e:
 
-    st.error("❌ Model loading failed.")
+    st.error(
+        "❌ Model loading failed."
+    )
 
-    st.error(f"Actual error: {e}")
-
-    st.write("Please check the error above.")
+    st.exception(e)
 
     st.stop()
 
@@ -71,40 +106,56 @@ class_names = [
 # =========================================================
 
 def validate_image(image):
+
     """
     Basic input validation.
 
-    Rejects:
-    1. Color images
-    2. Extremely small images
-    3. Images with very unusual intensity distributions
+    Checks:
+    1. Whether the image is grayscale
+    2. Whether the image is large enough
+    3. Whether the image is blank
+    4. Whether the image has extreme intensity distribution
 
     NOTE:
-    JPG/PNG files do not reliably contain modality information.
+    JPG/PNG files do not contain reliable modality metadata.
     Therefore, this function cannot guarantee that an image
-    is CT rather than MRI/X-ray.
+    is a CT scan.
     """
 
     # -----------------------------------------------------
     # Check image mode
     # -----------------------------------------------------
 
-    if image.mode not in ["L", "I", "I;16", "F"]:
+    if image.mode not in [
+        "L",
+        "I",
+        "I;16",
+        "F"
+    ]:
 
-        # Check whether it is actually grayscale despite
-        # being stored as RGB/RGBA.
+        # Check whether RGB image is actually grayscale
         rgb_image = image.convert("RGB")
 
-        rgb_array = np.array(rgb_image)
+        rgb_array = np.array(
+            rgb_image
+        )
 
         r = rgb_array[:, :, 0]
         g = rgb_array[:, :, 1]
         b = rgb_array[:, :, 2]
 
-        # Difference between channels
         channel_difference = np.mean(
-            np.abs(r.astype(np.float32) - g.astype(np.float32))
-            + np.abs(g.astype(np.float32) - b.astype(np.float32))
+            np.abs(
+                r.astype(np.float32)
+                -
+                g.astype(np.float32)
+            )
+            +
+            np.abs(
+                g.astype(np.float32)
+                -
+                b.astype(np.float32)
+            )
         )
 
         # Clearly colored image
@@ -121,7 +172,9 @@ def validate_image(image):
 
     gray = image.convert("L")
 
-    gray_array = np.array(gray).astype(np.float32)
+    gray_array = np.array(
+        gray
+    ).astype(np.float32)
 
     # -----------------------------------------------------
     # Image size check
@@ -140,10 +193,18 @@ def validate_image(image):
     # Intensity statistics
     # -----------------------------------------------------
 
-    mean_intensity = np.mean(gray_array)
-    std_intensity = np.std(gray_array)
+    mean_intensity = np.mean(
+        gray_array
+    )
 
-    # Completely blank / nearly blank image
+    std_intensity = np.std(
+        gray_array
+    )
+
+    # -----------------------------------------------------
+    # Blank / nearly blank image
+    # -----------------------------------------------------
+
     if std_intensity < 8:
 
         return (
@@ -163,8 +224,11 @@ def validate_image(image):
         gray_array > 245
     )
 
-    # Reject images that are almost entirely black/white
-    if dark_ratio > 0.98 or bright_ratio > 0.98:
+    if (
+        dark_ratio > 0.98
+        or
+        bright_ratio > 0.98
+    ):
 
         return (
             False,
@@ -172,7 +236,7 @@ def validate_image(image):
         )
 
     # -----------------------------------------------------
-    # Passed basic validation
+    # Passed validation
     # -----------------------------------------------------
 
     return (
@@ -187,31 +251,57 @@ def validate_image(image):
 
 def predict_image(image):
 
-    # Convert to RGB because the trained EfficientNet
-    # feature extractor expects 3 channels
-    image = image.convert("RGB")
+    # -----------------------------------------------------
+    # Convert image to RGB
+    # -----------------------------------------------------
+    # EfficientNetB0 expects 3 channels.
+    # -----------------------------------------------------
 
-    # Resize
-    image = image.resize((224, 224))
+    image = image.convert(
+        "RGB"
+    )
 
-    # NumPy conversion
+    # -----------------------------------------------------
+    # Resize to model input size
+    # -----------------------------------------------------
+
+    image = image.resize(
+        (224, 224)
+    )
+
+    # -----------------------------------------------------
+    # Convert to NumPy array
+    # -----------------------------------------------------
+
     image_array = np.array(
         image
-    ).astype(np.float32)
+    ).astype(
+        np.float32
+    )
 
+    # -----------------------------------------------------
     # Add batch dimension
+    # Shape:
+    # (224, 224, 3)
+    # ->
+    # (1, 224, 224, 3)
+    # -----------------------------------------------------
+
     image_array = np.expand_dims(
         image_array,
         axis=0
     )
 
+    # -----------------------------------------------------
     # EfficientNet preprocessing
+    # -----------------------------------------------------
+
     image_array = preprocess_input(
         image_array
     )
 
     # -----------------------------------------------------
-    # GSFF feature extraction
+    # GSFF FEATURE EXTRACTION
     # -----------------------------------------------------
 
     features = feature_extractor.predict(
@@ -228,23 +318,36 @@ def predict_image(image):
     )
 
     # -----------------------------------------------------
-    # RBF-SVM
+    # RBF-SVM prediction
     # -----------------------------------------------------
 
     prediction = svm.predict(
         scaled_features
     )[0]
 
+    # -----------------------------------------------------
+    # Probability prediction
+    # -----------------------------------------------------
+
     probabilities = svm.predict_proba(
         scaled_features
     )[0]
 
+    # -----------------------------------------------------
+    # Predicted class
+    # -----------------------------------------------------
+
     predicted_class = class_names[
-        prediction
+        int(prediction)
     ]
 
+    # -----------------------------------------------------
+    # Confidence
+    # -----------------------------------------------------
+
     confidence = (
-        probabilities[prediction] * 100
+        probabilities[int(prediction)]
+        * 100
     )
 
     return (
@@ -292,6 +395,10 @@ uploaded_file = st.file_uploader(
 
 if uploaded_file is not None:
 
+    # -----------------------------------------------------
+    # Read image
+    # -----------------------------------------------------
+
     try:
 
         image = Image.open(
@@ -305,7 +412,6 @@ if uploaded_file is not None:
         )
 
         st.stop()
-
 
     # -----------------------------------------------------
     # Display uploaded image
@@ -321,12 +427,14 @@ if uploaded_file is not None:
         use_container_width=True
     )
 
-
     # -----------------------------------------------------
     # Validate image
     # -----------------------------------------------------
 
-    is_valid, validation_message = validate_image(
+    (
+        is_valid,
+        validation_message
+    ) = validate_image(
         image
     )
 
@@ -342,11 +450,9 @@ if uploaded_file is not None:
 
         st.stop()
 
-
     st.success(
         validation_message
     )
-
 
     # =====================================================
     # DETECTION BUTTON
@@ -367,7 +473,9 @@ if uploaded_file is not None:
                     predicted_class,
                     confidence,
                     probabilities
-                ) = predict_image(image)
+                ) = predict_image(
+                    image
+                )
 
             except Exception as e:
 
@@ -375,14 +483,15 @@ if uploaded_file is not None:
                     "❌ Prediction failed."
                 )
 
-                st.exception(e)
+                st.exception(
+                    e
+                )
 
                 st.stop()
 
-
-        # -------------------------------------------------
-        # Prediction
-        # -------------------------------------------------
+        # =================================================
+        # PREDICTION RESULT
+        # =================================================
 
         st.subheader(
             "🎯 Prediction Result"
@@ -406,20 +515,18 @@ if uploaded_file is not None:
                 f"Prediction: **{predicted_class}**"
             )
 
-
-        # -------------------------------------------------
-        # Confidence
-        # -------------------------------------------------
+        # =================================================
+        # CONFIDENCE
+        # =================================================
 
         st.metric(
             "Prediction Confidence",
             f"{confidence:.2f}%"
         )
 
-
-        # -------------------------------------------------
-        # Class probabilities
-        # -------------------------------------------------
+        # =================================================
+        # CLASS PROBABILITIES
+        # =================================================
 
         st.subheader(
             "📊 Class Probability Estimates"
@@ -430,7 +537,8 @@ if uploaded_file is not None:
         ):
 
             probability = (
-                probabilities[i] * 100
+                probabilities[i]
+                * 100
             )
 
             st.write(
@@ -439,7 +547,9 @@ if uploaded_file is not None:
             )
 
             st.progress(
-                float(probabilities[i])
+                float(
+                    probabilities[i]
+                )
             )
 
 
@@ -459,7 +569,7 @@ with st.sidebar:
         ↓
         Block5c
         ↓
-        GAP + GSDP
+        GAP + GMP + STD
         ↓
         GSFF
         ↓
@@ -477,9 +587,17 @@ with st.sidebar:
         "**Classes:**"
     )
 
-    st.write("Normal")
-    st.write("Benign")
-    st.write("Malignant")
+    st.write(
+        "Normal"
+    )
+
+    st.write(
+        "Benign"
+    )
+
+    st.write(
+        "Malignant"
+    )
 
     st.divider()
 
