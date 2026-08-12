@@ -1,19 +1,48 @@
 # ============================================================
 # app.py
+# GSFF-SVM Lung Cancer Detection
 #
-# GSFF-SVM Lung Cancer Detection System
+# EfficientNetB0
+#      ↓
+# block5c_add
+#      ↓
+# GAP + GSDP
+#      ↓
+# GSFF Fusion (224 features)
+#      ↓
+# RobustScaler
+#      ↓
+# RBF-SVM
+#      ↓
+# Normal / Benign / Malignant
+#
+# IMPORTANT:
+# NO Lambda layer
+# NO keras.backend.K
+# NO .keras feature extractor loading
 # ============================================================
+
+
+import os
+from pathlib import Path
 
 import numpy as np
 import streamlit as st
 import tensorflow as tf
-import tensorflow.keras.backend as K
 import joblib
 
 from PIL import Image
-from pathlib import Path
 
+from tensorflow.keras.applications import EfficientNetB0
 from tensorflow.keras.applications.efficientnet import preprocess_input
+
+from tensorflow.keras.layers import (
+    Layer,
+    GlobalAveragePooling2D,
+    Concatenate
+)
+
+from tensorflow.keras.models import Model
 
 
 # ============================================================
@@ -38,15 +67,11 @@ BASE_DIR = Path(__file__).resolve().parent
 # MODEL FILES
 # ============================================================
 
-FEATURE_EXTRACTOR_PATH = (
-    BASE_DIR / "GSFF_Feature_Extractor.keras"
-)
-
-SCALER_PATH = (
+SCALER_FILE = (
     BASE_DIR / "RobustScaler.pkl"
 )
 
-SVM_PATH = (
+SVM_FILE = (
     BASE_DIR / "SVM_Classifier.pkl"
 )
 
@@ -55,160 +80,7 @@ SVM_PATH = (
 # IMAGE SETTINGS
 # ============================================================
 
-INPUT_SIZE = (224, 224)
-
-
-# ============================================================
-# IMAGE VALIDATION THRESHOLDS
-# ============================================================
-#
-# IMPORTANT:
-#
-# These are IMAGE-QUALITY / INPUT-REJECTION thresholds.
-#
-# They are NOT trained X-ray/MRI modality thresholds.
-# Reliable X-ray-vs-MRI-vs-CT classification requires
-# a separate trained modality classifier.
-#
-# ============================================================
-
-MIN_IMAGE_SIZE = 64
-
-MIN_STD = 8.0
-
-MAX_DARK_RATIO = 0.98
-
-MAX_BRIGHT_RATIO = 0.98
-
-MIN_DYNAMIC_RANGE = 20.0
-
-
-# ============================================================
-# MODEL FILE CHECK
-# ============================================================
-
-def check_model_file(path, model_name):
-
-    if not path.exists():
-
-        st.error(
-            f"❌ {model_name} was not found."
-        )
-
-        st.code(
-            str(path)
-        )
-
-        st.stop()
-
-    if path.stat().st_size == 0:
-
-        st.error(
-            f"❌ {model_name} file is empty."
-        )
-
-        st.code(
-            str(path)
-        )
-
-        st.stop()
-
-
-# ============================================================
-# CHECK REQUIRED FILES
-# ============================================================
-
-check_model_file(
-    FEATURE_EXTRACTOR_PATH,
-    "GSFF feature extractor"
-)
-
-check_model_file(
-    SCALER_PATH,
-    "RobustScaler"
-)
-
-check_model_file(
-    SVM_PATH,
-    "SVM classifier"
-)
-
-
-# ============================================================
-# LOAD TRAINED MODELS
-# ============================================================
-
-@st.cache_resource
-def load_models():
-
-    # --------------------------------------------------------
-    # GSFF FEATURE EXTRACTOR
-    #
-    # custom_objects={"K": K}
-    # is required because the saved Lambda layer uses K.
-    # --------------------------------------------------------
-
-    feature_extractor = tf.keras.models.load_model(
-        str(FEATURE_EXTRACTOR_PATH),
-
-        custom_objects={
-            "K": K
-        },
-
-        safe_mode=False,
-
-        compile=False
-    )
-
-    # --------------------------------------------------------
-    # RobustScaler
-    # --------------------------------------------------------
-
-    scaler = joblib.load(
-        str(SCALER_PATH)
-    )
-
-    # --------------------------------------------------------
-    # RBF-SVM
-    # --------------------------------------------------------
-
-    svm = joblib.load(
-        str(SVM_PATH)
-    )
-
-    return (
-        feature_extractor,
-        scaler,
-        svm
-    )
-
-
-# ============================================================
-# LOAD MODELS
-# ============================================================
-
-try:
-
-    (
-        feature_extractor,
-        scaler,
-        svm
-    ) = load_models()
-
-except Exception as e:
-
-    st.error(
-        "❌ Model loading failed."
-    )
-
-    st.error(
-        "Please verify that the GSFF feature extractor, "
-        "RobustScaler and SVM files match the trained model."
-    )
-
-    st.exception(e)
-
-    st.stop()
+IMAGE_SIZE = (224, 224)
 
 
 # ============================================================
@@ -223,69 +95,347 @@ class_names = [
 
 
 # ============================================================
+# CUSTOM GSDP LAYER
+# ============================================================
+#
+# GSDP = Global Standard Deviation Pooling
+#
+# Input:
+#     14 × 14 × 112
+#
+# Output:
+#     112
+#
+# NO Lambda
+# NO K
+# ============================================================
+
+class GSDP(Layer):
+
+    def call(self, inputs):
+
+        return tf.math.reduce_std(
+            inputs,
+            axis=[1, 2]
+        )
+
+
+# ============================================================
+# CHECK REQUIRED FILE
+# ============================================================
+
+def check_file(path, name):
+
+    if not path.exists():
+
+        st.error(
+            f"❌ {name} was not found."
+        )
+
+        st.code(
+            str(path)
+        )
+
+        st.stop()
+
+
+    if path.stat().st_size == 0:
+
+        st.error(
+            f"❌ {name} is empty."
+        )
+
+        st.code(
+            str(path)
+        )
+
+        st.stop()
+
+
+# ============================================================
+# CHECK SCALER AND SVM
+# ============================================================
+
+check_file(
+    SCALER_FILE,
+    "RobustScaler.pkl"
+)
+
+check_file(
+    SVM_FILE,
+    "SVM_Classifier.pkl"
+)
+
+
+# ============================================================
+# BUILD GSFF FEATURE EXTRACTOR
+# ============================================================
+#
+# This completely bypasses the old problematic
+# GSFF_Feature_Extractor.keras file.
+#
+# ============================================================
+
+@st.cache_resource
+def build_feature_extractor():
+
+    # --------------------------------------------------------
+    # EfficientNetB0
+    # --------------------------------------------------------
+
+    base_model = EfficientNetB0(
+        weights="imagenet",
+        include_top=False,
+        input_shape=(224, 224, 3)
+    )
+
+
+    # --------------------------------------------------------
+    # Freeze EfficientNet
+    # --------------------------------------------------------
+
+    for layer in base_model.layers:
+
+        layer.trainable = False
+
+
+    # --------------------------------------------------------
+    # Truncate at block5c_add
+    # --------------------------------------------------------
+
+    feature_map = base_model.get_layer(
+        "block5c_add"
+    ).output
+
+
+    # --------------------------------------------------------
+    # GAP
+    # --------------------------------------------------------
+
+    gap = GlobalAveragePooling2D(
+        name="GAP"
+    )(feature_map)
+
+
+    # --------------------------------------------------------
+    # GSDP
+    # --------------------------------------------------------
+
+    gsdp = GSDP(
+        name="GSDP"
+    )(feature_map)
+
+
+    # --------------------------------------------------------
+    # GSFF FUSION
+    # --------------------------------------------------------
+
+    gsff = Concatenate(
+        name="GSFF_Fusion"
+    )([
+        gap,
+        gsdp
+    ])
+
+
+    # --------------------------------------------------------
+    # Final feature extractor
+    # --------------------------------------------------------
+
+    model = Model(
+        inputs=base_model.input,
+        outputs=gsff,
+        name="GSFF_Feature_Extractor"
+    )
+
+
+    return model
+
+
+# ============================================================
+# LOAD SCALER
+# ============================================================
+
+@st.cache_resource
+def load_scaler():
+
+    return joblib.load(
+        str(SCALER_FILE)
+    )
+
+
+# ============================================================
+# LOAD SVM
+# ============================================================
+
+@st.cache_resource
+def load_svm():
+
+    return joblib.load(
+        str(SVM_FILE)
+    )
+
+
+# ============================================================
+# LOAD EVERYTHING
+# ============================================================
+
+try:
+
+    feature_extractor = (
+        build_feature_extractor()
+    )
+
+    scaler = load_scaler()
+
+    svm = load_svm()
+
+
+except Exception as e:
+
+    st.error(
+        "❌ Model loading failed."
+    )
+
+    st.exception(e)
+
+    st.stop()
+
+
+# ============================================================
+# VERIFY FEATURE DIMENSION
+# ============================================================
+
+try:
+
+    feature_dimension = (
+        feature_extractor.output_shape[-1]
+    )
+
+except Exception as e:
+
+    st.error(
+        "❌ Could not determine feature dimension."
+    )
+
+    st.exception(e)
+
+    st.stop()
+
+
+if feature_dimension != 224:
+
+    st.error(
+        "❌ GSFF feature dimension mismatch."
+    )
+
+    st.write(
+        f"Expected: 224"
+    )
+
+    st.write(
+        f"Actual: {feature_dimension}"
+    )
+
+    st.stop()
+
+
+# ============================================================
+# VERIFY SCALER DIMENSION
+# ============================================================
+
+if hasattr(
+    scaler,
+    "n_features_in_"
+):
+
+    if scaler.n_features_in_ != 224:
+
+        st.error(
+            "❌ RobustScaler feature dimension mismatch."
+        )
+
+        st.write(
+            f"Expected: 224"
+        )
+
+        st.write(
+            f"Actual: {scaler.n_features_in_}"
+        )
+
+        st.stop()
+
+
+# ============================================================
+# VERIFY SVM DIMENSION
+# ============================================================
+
+if hasattr(
+    svm,
+    "n_features_in_"
+):
+
+    if svm.n_features_in_ != 224:
+
+        st.error(
+            "❌ SVM feature dimension mismatch."
+        )
+
+        st.write(
+            f"Expected: 224"
+        )
+
+        st.write(
+            f"Actual: {svm.n_features_in_}"
+        )
+
+        st.stop()
+
+
+# ============================================================
 # IMAGE VALIDATION
 # ============================================================
 
-def validate_ct_image(image):
-
-    """
-    Performs basic input validation before the image
-    reaches the GSFF-SVM model.
-
-    The validation checks:
-
-    1. Colour image rejection
-    2. Minimum image resolution
-    3. Blank image rejection
-    4. Extremely dark image rejection
-    5. Extremely bright image rejection
-    6. Extremely low dynamic-range rejection
-
-    IMPORTANT:
-    These checks cannot mathematically prove that an image
-    is CT. A separate trained modality classifier is needed
-    for reliable CT/X-ray/MRI discrimination.
-    """
-
-    # ========================================================
-    # STEP 1 — COLOUR IMAGE CHECK
-    # ========================================================
-
-    original_mode = image.mode
+def validate_image(image):
 
     # --------------------------------------------------------
-    # RGB / RGBA / CMYK etc.
+    # Reject actual colour images
     # --------------------------------------------------------
 
-    if original_mode not in [
-        "L",
-        "I",
-        "I;16",
-        "F"
+    if image.mode in [
+        "RGB",
+        "RGBA",
+        "CMYK",
+        "P",
+        "HSV"
     ]:
 
-        rgb_image = image.convert(
+        rgb = image.convert(
             "RGB"
         )
 
-        rgb_array = np.asarray(
-            rgb_image,
+        arr = np.asarray(
+            rgb,
             dtype=np.float32
         )
 
-        r = rgb_array[:, :, 0]
-        g = rgb_array[:, :, 1]
-        b = rgb_array[:, :, 2]
+
+        r = arr[:, :, 0]
+        g = arr[:, :, 1]
+        b = arr[:, :, 2]
+
 
         channel_difference = np.mean(
             np.abs(r - g)
             +
             np.abs(g - b)
+            +
+            np.abs(r - b)
         )
 
-        # ----------------------------------------------------
-        # Clearly coloured image
-        # ----------------------------------------------------
+
+        # If channels differ meaningfully,
+        # treat as a colour image.
 
         if channel_difference > 3.0:
 
@@ -295,178 +445,170 @@ def validate_ct_image(image):
                 "Please upload a grayscale lung CT image."
             )
 
-    # ========================================================
-    # STEP 2 — CONVERT TO GRAYSCALE
-    # ========================================================
+
+    # --------------------------------------------------------
+    # Convert to grayscale for validation
+    # --------------------------------------------------------
 
     gray = image.convert(
         "L"
     )
+
 
     gray_array = np.asarray(
         gray,
         dtype=np.float32
     )
 
-    # ========================================================
-    # STEP 3 — IMAGE SIZE
-    # ========================================================
+
+    # --------------------------------------------------------
+    # Resolution check
+    # --------------------------------------------------------
 
     width, height = gray.size
 
-    if (
-        width < MIN_IMAGE_SIZE
-        or
-        height < MIN_IMAGE_SIZE
-    ):
+
+    if width < 64 or height < 64:
 
         return (
             False,
-            "❌ Image resolution is too small. "
-            "Please upload a higher-resolution medical image."
+            "❌ Image resolution is too small."
         )
 
-    # ========================================================
-    # STEP 4 — INTENSITY STATISTICS
-    # ========================================================
 
-    mean_intensity = float(
-        np.mean(gray_array)
+    # --------------------------------------------------------
+    # Intensity statistics
+    # --------------------------------------------------------
+
+    mean_intensity = np.mean(
+        gray_array
     )
 
-    std_intensity = float(
-        np.std(gray_array)
+    std_intensity = np.std(
+        gray_array
     )
 
-    minimum_intensity = float(
-        np.min(gray_array)
-    )
 
-    maximum_intensity = float(
-        np.max(gray_array)
-    )
+    # --------------------------------------------------------
+    # Blank image check
+    # --------------------------------------------------------
 
-    dynamic_range = (
-        maximum_intensity
-        -
-        minimum_intensity
-    )
-
-    # ========================================================
-    # STEP 5 — BLANK / LOW-CONTRAST IMAGE
-    # ========================================================
-
-    if std_intensity < MIN_STD:
+    if std_intensity < 8:
 
         return (
             False,
-            "❌ The uploaded image has extremely low "
-            "contrast and may be blank or invalid."
+            "❌ Image appears blank or invalid."
         )
 
-    # ========================================================
-    # STEP 6 — DYNAMIC RANGE CHECK
-    # ========================================================
 
-    if dynamic_range < MIN_DYNAMIC_RANGE:
+    # --------------------------------------------------------
+    # Almost completely black
+    # --------------------------------------------------------
 
-        return (
-            False,
-            "❌ The uploaded image has an unusually "
-            "small intensity range."
-        )
-
-    # ========================================================
-    # STEP 7 — EXTREME BLACK/WHITE CHECK
-    # ========================================================
-
-    dark_ratio = float(
-        np.mean(
-            gray_array < 10
-        )
+    dark_ratio = np.mean(
+        gray_array < 10
     )
 
-    bright_ratio = float(
-        np.mean(
-            gray_array > 245
+
+    if dark_ratio > 0.98:
+
+        return (
+            False,
+            "❌ Image appears almost completely black."
         )
+
+
+    # --------------------------------------------------------
+    # Almost completely white
+    # --------------------------------------------------------
+
+    bright_ratio = np.mean(
+        gray_array > 245
     )
 
-    if dark_ratio > MAX_DARK_RATIO:
+
+    if bright_ratio > 0.98:
 
         return (
             False,
-            "❌ The image is almost completely black "
-            "and does not appear to be a valid CT image."
+            "❌ Image appears almost completely white."
         )
 
-    if bright_ratio > MAX_BRIGHT_RATIO:
 
-        return (
-            False,
-            "❌ The image is almost completely white "
-            "and does not appear to be a valid CT image."
-        )
-
-    # ========================================================
-    # PASSED BASIC VALIDATION
-    # ========================================================
+    # --------------------------------------------------------
+    # Passed
+    # --------------------------------------------------------
 
     return (
         True,
-        "✅ Image passed the basic input validation."
+        "✅ Image passed basic validation."
     )
 
 
 # ============================================================
-# IMAGE PREPROCESSING
+# PREPROCESS IMAGE
 # ============================================================
 
 def preprocess_image(image):
 
     # --------------------------------------------------------
-    # Convert grayscale image to RGB
+    # Convert grayscale to RGB
     #
     # IMPORTANT:
-    # This happens ONLY after validation.
     #
-    # EfficientNet expects 3 channels.
+    # This does NOT mean colour images are accepted.
+    #
+    # Validation happens BEFORE this function.
+    #
+    # The trained EfficientNet requires 3 channels.
     # --------------------------------------------------------
 
-    image = image.convert(
-        "RGB"
+    gray = image.convert(
+        "L"
     )
+
 
     # --------------------------------------------------------
     # Resize
     # --------------------------------------------------------
 
-    image = image.resize(
-        INPUT_SIZE,
+    gray = gray.resize(
+        IMAGE_SIZE,
         Image.Resampling.LANCZOS
     )
 
+
     # --------------------------------------------------------
-    # NumPy conversion
+    # Convert grayscale → RGB
+    #
+    # All three channels contain the SAME grayscale values.
     # --------------------------------------------------------
 
     image_array = np.asarray(
-        image,
+        gray,
         dtype=np.float32
     )
 
+
+    image_array = np.stack(
+        [
+            image_array,
+            image_array,
+            image_array
+        ],
+        axis=-1
+    )
+
+
     # --------------------------------------------------------
     # Add batch dimension
-    #
-    # (224,224,3)
-    # ->
-    # (1,224,224,3)
     # --------------------------------------------------------
 
     image_array = np.expand_dims(
         image_array,
         axis=0
     )
+
 
     # --------------------------------------------------------
     # EfficientNet preprocessing
@@ -476,47 +618,68 @@ def preprocess_image(image):
         image_array
     )
 
+
     return image_array
 
 
 # ============================================================
-# GSFF-SVM PREDICTION
+# PREDICTION FUNCTION
 # ============================================================
 
 def predict_image(image):
 
     # --------------------------------------------------------
-    # Preprocess image
+    # Preprocess
     # --------------------------------------------------------
 
     image_array = preprocess_image(
         image
     )
 
+
     # --------------------------------------------------------
     # GSFF FEATURE EXTRACTION
     # --------------------------------------------------------
 
-    features = feature_extractor.predict(
-        image_array,
-        verbose=0
+    features = (
+        feature_extractor.predict(
+            image_array,
+            verbose=0
+        )
     )
+
+
+    # --------------------------------------------------------
+    # Safety check
+    # --------------------------------------------------------
+
+    if features.shape[1] != 224:
+
+        raise ValueError(
+            f"GSFF produced {features.shape[1]} "
+            f"features instead of 224."
+        )
+
 
     # --------------------------------------------------------
     # RobustScaler
     # --------------------------------------------------------
 
-    scaled_features = scaler.transform(
-        features
+    scaled_features = (
+        scaler.transform(
+            features
+        )
     )
 
+
     # --------------------------------------------------------
-    # RBF-SVM CLASSIFICATION
+    # RBF-SVM prediction
     # --------------------------------------------------------
 
     prediction = svm.predict(
         scaled_features
     )[0]
+
 
     # --------------------------------------------------------
     # SVM probabilities
@@ -526,29 +689,29 @@ def predict_image(image):
         scaled_features
     )[0]
 
-    # --------------------------------------------------------
-    # Convert prediction to integer
-    # --------------------------------------------------------
-
-    prediction = int(
-        prediction
-    )
 
     # --------------------------------------------------------
-    # Class name
+    # Class
     # --------------------------------------------------------
 
     predicted_class = class_names[
-        prediction
+        int(prediction)
     ]
+
 
     # --------------------------------------------------------
     # Confidence
     # --------------------------------------------------------
 
-    confidence = float(
-        probabilities[prediction]
+    confidence = (
+        float(
+            probabilities[
+                int(prediction)
+            ]
+        )
+        * 100
     )
+
 
     return (
         predicted_class,
@@ -565,14 +728,17 @@ st.title(
     "🫁 GSFF-SVM Lung Cancer Detection"
 )
 
+
 st.write(
-    "Deep learning and machine learning based "
-    "lung CT image classification system."
+    "EfficientNetB0-based deep feature extraction "
+    "combined with GAP + GSDP fusion and an RBF-SVM "
+    "classifier for lung CT image classification."
 )
 
+
 st.info(
-    "Only grayscale medical images are supported. "
-    "Colour images are automatically rejected."
+    "⚠️ Only grayscale lung CT images are supported. "
+    "Colour images are rejected."
 )
 
 
@@ -589,15 +755,23 @@ with st.expander(
     )
 
     st.write(
-        "Feature extraction stage: Block5c"
+        "Truncation: block5c_add"
     )
 
     st.write(
-        "Feature fusion: GAP + GMP + STD"
+        "Feature Map: 14 × 14 × 112"
     )
 
     st.write(
-        "Feature normalization: RobustScaler"
+        "Pooling: GAP + GSDP"
+    )
+
+    st.write(
+        "GSFF Feature Dimension: 224"
+    )
+
+    st.write(
+        "Scaler: RobustScaler"
     )
 
     st.write(
@@ -605,50 +779,7 @@ with st.expander(
     )
 
     st.write(
-        "Input size: 224 × 224 × 3"
-    )
-
-    st.write(
         "Classes: Normal, Benign, Malignant"
-    )
-
-
-# ============================================================
-# INPUT VALIDATION INFORMATION
-# ============================================================
-
-with st.expander(
-    "⚙️ Input Validation Thresholds"
-):
-
-    st.write(
-        f"Minimum image size: "
-        f"{MIN_IMAGE_SIZE} × {MIN_IMAGE_SIZE}"
-    )
-
-    st.write(
-        f"Minimum grayscale standard deviation: "
-        f"{MIN_STD}"
-    )
-
-    st.write(
-        f"Maximum dark-pixel ratio: "
-        f"{MAX_DARK_RATIO * 100:.0f}%"
-    )
-
-    st.write(
-        f"Maximum bright-pixel ratio: "
-        f"{MAX_BRIGHT_RATIO * 100:.0f}%"
-    )
-
-    st.write(
-        f"Minimum dynamic range: "
-        f"{MIN_DYNAMIC_RANGE}"
-    )
-
-    st.warning(
-        "These are image-quality thresholds, not "
-        "X-ray/MRI/CT modality-classification thresholds."
     )
 
 
@@ -684,16 +815,28 @@ if uploaded_file is not None:
             uploaded_file
         )
 
-        # Force image loading
         image.load()
 
+
         # ----------------------------------------------------
-        # Display uploaded image
+        # Validate BEFORE prediction
+        # ----------------------------------------------------
+
+        is_valid, message = (
+            validate_image(
+                image
+            )
+        )
+
+
+        # ----------------------------------------------------
+        # Display image
         # ----------------------------------------------------
 
         st.subheader(
-            "📷 Uploaded Image"
+            "Uploaded Image"
         )
+
 
         st.image(
             image,
@@ -701,91 +844,36 @@ if uploaded_file is not None:
             use_container_width=True
         )
 
-        # ====================================================
-        # STEP 1 — IMAGE VALIDATION
-        # ====================================================
 
-        st.subheader(
-            "Step 1 — Image Validation"
-        )
-
-        (
-            is_valid,
-            validation_message
-        ) = validate_ct_image(
-            image
-        )
+        # ----------------------------------------------------
+        # Reject invalid image
+        # ----------------------------------------------------
 
         if not is_valid:
 
             st.error(
-                validation_message
+                message
             )
 
             st.warning(
-                "Prediction was stopped because the "
-                "uploaded image did not pass validation."
+                "Please upload a grayscale lung CT image."
             )
 
             st.stop()
 
+
+        # ----------------------------------------------------
+        # Valid image
+        # ----------------------------------------------------
+
         st.success(
-            validation_message
+            message
         )
+
 
         # ====================================================
-        # IMAGE STATISTICS
+        # DETECTION BUTTON
         # ====================================================
-
-        gray = image.convert(
-            "L"
-        )
-
-        gray_array = np.asarray(
-            gray,
-            dtype=np.float32
-        )
-
-        mean_intensity = float(
-            np.mean(gray_array)
-        )
-
-        std_intensity = float(
-            np.std(gray_array)
-        )
-
-        dynamic_range = float(
-            np.max(gray_array)
-            -
-            np.min(gray_array)
-        )
-
-        with st.expander(
-            "Image Statistics"
-        ):
-
-            st.write(
-                f"Mean intensity: "
-                f"{mean_intensity:.2f}"
-            )
-
-            st.write(
-                f"Standard deviation: "
-                f"{std_intensity:.2f}"
-            )
-
-            st.write(
-                f"Dynamic range: "
-                f"{dynamic_range:.2f}"
-            )
-
-        # ====================================================
-        # STEP 2 — DETECTION
-        # ====================================================
-
-        st.subheader(
-            "Step 2 — Lung Condition Detection"
-        )
 
         if st.button(
             "🔍 Detect Lung Condition",
@@ -796,35 +884,23 @@ if uploaded_file is not None:
                 "Analyzing CT image..."
             ):
 
-                try:
+                (
+                    predicted_class,
+                    confidence,
+                    probabilities
+                ) = predict_image(
+                    image
+                )
 
-                    (
-                        predicted_class,
-                        confidence,
-                        probabilities
-                    ) = predict_image(
-                        image
-                    )
-
-                except Exception as e:
-
-                    st.error(
-                        "❌ Prediction failed."
-                    )
-
-                    st.exception(
-                        e
-                    )
-
-                    st.stop()
 
             # =================================================
-            # PREDICTION RESULT
+            # RESULT
             # =================================================
 
             st.subheader(
                 "🎯 Prediction Result"
             )
+
 
             if predicted_class == "Normal":
 
@@ -832,11 +908,13 @@ if uploaded_file is not None:
                     f"Prediction: **{predicted_class}**"
                 )
 
+
             elif predicted_class == "Benign":
 
                 st.warning(
                     f"Prediction: **{predicted_class}**"
                 )
+
 
             else:
 
@@ -844,60 +922,66 @@ if uploaded_file is not None:
                     f"Prediction: **{predicted_class}**"
                 )
 
+
             # =================================================
             # CONFIDENCE
             # =================================================
 
             st.metric(
                 "Prediction Confidence",
-                f"{confidence * 100:.2f}%"
+                f"{confidence:.2f}%"
             )
 
+
             # =================================================
-            # CLASS PROBABILITIES
+            # PROBABILITIES
             # =================================================
 
             st.subheader(
                 "📊 Class Probability Estimates"
             )
 
+
             for i, class_name in enumerate(
                 class_names
             ):
 
-                probability = float(
-                    probabilities[i]
+                probability = (
+                    float(
+                        probabilities[i]
+                    )
                 )
+
 
                 st.write(
                     f"**{class_name}: "
                     f"{probability * 100:.2f}%**"
                 )
 
+
                 st.progress(
                     probability
                 )
+
 
             # =================================================
             # DISCLAIMER
             # =================================================
 
             st.info(
-                "⚠️ This system is a research prototype "
-                "and is not intended for clinical diagnosis. "
-                "Predictions should not replace evaluation "
-                "by a qualified medical professional."
+                "This system is intended for research "
+                "and educational purposes only and is "
+                "not intended for clinical diagnosis."
             )
+
 
     except Exception as e:
 
         st.error(
-            "❌ An error occurred while processing the image."
+            "❌ Prediction failed."
         )
 
-        st.exception(
-            e
-        )
+        st.exception(e)
 
 
 # ============================================================
@@ -910,25 +994,30 @@ with st.sidebar:
         "🫁 GSFF-SVM Framework"
     )
 
+
     st.write(
         """
         EfficientNetB0
-        ↓
-        Block5c
-        ↓
-        GAP + GMP + STD
-        ↓
+              ↓
+        block5c_add
+              ↓
+        GAP + GSDP
+              ↓
         GSFF
-        ↓
+              ↓
+        224 Features
+              ↓
         RobustScaler
-        ↓
+              ↓
         RBF-SVM
-        ↓
-        Normal / Benign / Malignant
+              ↓
+        Classification
         """
     )
 
+
     st.divider()
+
 
     st.write(
         "**Classes:**"
@@ -946,17 +1035,30 @@ with st.sidebar:
         "🔴 Malignant"
     )
 
+
     st.divider()
+
 
     st.write(
         "**Input:**"
     )
 
     st.write(
-        "Grayscale lung CT images only"
+        "Grayscale lung CT image"
     )
 
+
+    st.write(
+        "**Colour images:**"
+    )
+
+    st.write(
+        "❌ Not supported"
+    )
+
+
     st.divider()
+
 
     st.caption(
         "Research prototype. "
