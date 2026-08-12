@@ -24,10 +24,10 @@ st.set_page_config(
 @st.cache_resource
 def load_models():
 
-    feature_extractor = tf.keras.models.load_model(
-        "GSFF_Feature_Extractor.keras"
-    )
-
+   feature_extractor = tf.keras.models.load_model(
+    "GSFF_Feature_Extractor.keras",
+    safe_mode=False
+)
     scaler = joblib.load(
         "RobustScaler.pkl"
     )
