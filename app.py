@@ -3,17 +3,15 @@
 # PulmoVision
 # AI-Powered Lung Cancer Detection System
 #
-# UI-enhanced version
-#
-# MODEL LOGIC — UNCHANGED:
+# Pipeline:
 #
 # Uploaded Image
 #       ↓
-# Colour Image Check
+# Image Validation
 #       ↓
-# CT / X-ray / MRI Verification
+# CT / X-ray / MRI Modality Verification
 #       ↓
-# CT only
+# CT
 #       ↓
 # EfficientNetB0 Block5c
 #       ↓
@@ -45,14 +43,13 @@ from tensorflow.keras.applications.efficientnet import (
 
 
 # ============================================================
-# PAGE CONFIGURATION
+# STREAMLIT PAGE CONFIGURATION
 # ============================================================
 
 st.set_page_config(
     page_title="PulmoVision | AI-Powered Lung Cancer Detection System",
     page_icon="🫁",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    layout="centered"
 )
 
 
@@ -64,9 +61,9 @@ st.markdown(
     """
     <style>
 
-    /* -------------------------------------------------------
-       GLOBAL
-    ------------------------------------------------------- */
+    /* ========================================================
+       MAIN APPLICATION
+       ======================================================== */
 
     .stApp {
         background:
@@ -89,34 +86,39 @@ st.markdown(
     }
 
 
-    /* -------------------------------------------------------
-       MAIN CONTAINER
-    ------------------------------------------------------- */
+    /* ========================================================
+       MAIN CONTENT
+       ======================================================== */
 
     .block-container {
         padding-top: 2rem;
         padding-bottom: 3rem;
-        max-width: 1200px;
+        max-width: 1100px;
     }
 
 
-    /* -------------------------------------------------------
-       HERO
-    ------------------------------------------------------- */
+    /* ========================================================
+       HERO HEADER
+       ======================================================== */
 
     .hero {
-        padding: 35px 35px 30px 35px;
-        border-radius: 25px;
+        padding: 32px 30px 28px 30px;
+        border-radius: 24px;
+
         background:
             linear-gradient(
                 135deg,
-                rgba(255,255,255,0.96),
-                rgba(235,247,255,0.96)
+                rgba(255, 255, 255, 0.97),
+                rgba(235, 247, 255, 0.97)
             );
-        border: 1px solid rgba(30,144,255,0.14);
+
+        border: 1px solid rgba(30, 144, 255, 0.14);
+
         box-shadow:
             0 12px 40px rgba(0, 70, 120, 0.10);
+
         margin-bottom: 25px;
+
         animation: fadeIn 0.8s ease-out;
     }
 
@@ -126,6 +128,7 @@ st.markdown(
         font-weight: 800;
         margin-bottom: 8px;
         letter-spacing: -1px;
+
         background:
             linear-gradient(
                 90deg,
@@ -133,51 +136,58 @@ st.markdown(
                 #1677c8,
                 #3b4cca
             );
+
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
     }
 
 
-    .hero-subtitle-main {
-        display: block;
-        font-size: 20px;
-        font-weight: 600;
-        margin-top: 4px;
-        letter-spacing: 0;
-        background: none;
-        -webkit-text-fill-color: #526777;
-        color: #526777;
-    }
-
-
     .hero-subtitle {
-        font-size: 18px;
+        font-size: 19px;
+        font-weight: 600;
         color: #526777;
-        line-height: 1.6;
+        margin-top: 5px;
+        line-height: 1.5;
     }
 
 
-    /* -------------------------------------------------------
+    .hero-description {
+        font-size: 15px;
+        color: #718494;
+        line-height: 1.6;
+        margin-top: 10px;
+    }
+
+
+    /* ========================================================
        FEATURE CARDS
-    ------------------------------------------------------- */
+       ======================================================== */
 
     .feature-card {
-        background: rgba(255,255,255,0.90);
-        border: 1px solid rgba(30,144,255,0.12);
+        background: rgba(255, 255, 255, 0.92);
+
+        border: 1px solid rgba(30, 144, 255, 0.12);
+
         border-radius: 18px;
+
         padding: 20px;
+
         min-height: 120px;
+
         box-shadow:
             0 8px 25px rgba(0, 70, 120, 0.07);
+
         transition:
             transform 0.25s ease,
             box-shadow 0.25s ease;
+
         animation: slideUp 0.7s ease-out;
     }
 
 
     .feature-card:hover {
         transform: translateY(-5px);
+
         box-shadow:
             0 15px 35px rgba(0, 70, 120, 0.13);
     }
@@ -203,31 +213,40 @@ st.markdown(
     }
 
 
-    /* -------------------------------------------------------
+    /* ========================================================
        SECTION TITLES
-    ------------------------------------------------------- */
+       ======================================================== */
 
     .section-title {
         font-size: 25px;
         font-weight: 750;
         color: #173b57;
+
         margin-top: 25px;
         margin-bottom: 15px;
+
+        animation: slideUp 0.5s ease-out;
     }
 
 
-    /* -------------------------------------------------------
-       RESULT CARDS
-    ------------------------------------------------------- */
+    /* ========================================================
+       RESULT CARD
+       ======================================================== */
 
     .result-card {
         padding: 28px;
+
         border-radius: 22px;
+
         text-align: center;
-        background: rgba(255,255,255,0.95);
-        border: 1px solid rgba(30,144,255,0.12);
+
+        background: rgba(255, 255, 255, 0.95);
+
+        border: 1px solid rgba(30, 144, 255, 0.12);
+
         box-shadow:
             0 10px 35px rgba(0, 70, 120, 0.10);
+
         animation: resultAppear 0.6s ease-out;
     }
 
@@ -235,7 +254,9 @@ st.markdown(
     .result-label {
         font-size: 15px;
         color: #718494;
+
         text-transform: uppercase;
+
         letter-spacing: 1px;
     }
 
@@ -243,41 +264,56 @@ st.markdown(
     .result-value {
         font-size: 36px;
         font-weight: 800;
+
         margin-top: 7px;
     }
 
 
-    /* -------------------------------------------------------
+    /* ========================================================
        UPLOAD AREA
-    ------------------------------------------------------- */
+       ======================================================== */
 
     [data-testid="stFileUploader"] {
-        background: rgba(255,255,255,0.75);
+        background: rgba(255, 255, 255, 0.78);
+
         border-radius: 20px;
+
         padding: 10px;
-        border: 1px dashed rgba(22,119,200,0.35);
+
+        border:
+            1px dashed rgba(22, 119, 200, 0.35);
+
+        animation: fadeIn 0.7s ease-out;
     }
 
 
-    /* -------------------------------------------------------
+    /* ========================================================
        BUTTON
-    ------------------------------------------------------- */
+       ======================================================== */
 
     .stButton > button {
         border-radius: 14px;
+
         height: 55px;
+
         font-size: 17px;
+
         font-weight: 700;
+
         border: none;
+
         background:
             linear-gradient(
                 90deg,
                 #087f8c,
                 #1677c8
             );
+
         color: white;
+
         box-shadow:
-            0 8px 20px rgba(22,119,200,0.20);
+            0 8px 20px rgba(22, 119, 200, 0.20);
+
         transition:
             transform 0.2s ease,
             box-shadow 0.2s ease;
@@ -286,14 +322,15 @@ st.markdown(
 
     .stButton > button:hover {
         transform: translateY(-2px);
+
         box-shadow:
-            0 12px 28px rgba(22,119,200,0.30);
+            0 12px 28px rgba(22, 119, 200, 0.30);
     }
 
 
-    /* -------------------------------------------------------
+    /* ========================================================
        SIDEBAR
-    ------------------------------------------------------- */
+       ======================================================== */
 
     section[data-testid="stSidebar"] {
         background:
@@ -302,7 +339,9 @@ st.markdown(
                 #f4fbff 0%,
                 #eaf5fa 100%
             );
-        border-right: 1px solid rgba(30,144,255,0.10);
+
+        border-right:
+            1px solid rgba(30, 144, 255, 0.10);
     }
 
 
@@ -313,24 +352,27 @@ st.markdown(
     }
 
 
-    /* -------------------------------------------------------
+    /* ========================================================
        ANIMATIONS
-    ------------------------------------------------------- */
+       ======================================================== */
 
     @keyframes fadeIn {
+
         from {
             opacity: 0;
-            transform: translateY(-15px);
+            transform: translateY(-12px);
         }
 
         to {
             opacity: 1;
             transform: translateY(0);
         }
+
     }
 
 
     @keyframes slideUp {
+
         from {
             opacity: 0;
             transform: translateY(15px);
@@ -340,33 +382,42 @@ st.markdown(
             opacity: 1;
             transform: translateY(0);
         }
+
     }
 
 
     @keyframes resultAppear {
+
         from {
             opacity: 0;
-            transform: scale(0.96);
+            transform: scale(0.95);
         }
 
         to {
             opacity: 1;
             transform: scale(1);
         }
+
     }
 
 
-    /* -------------------------------------------------------
+    /* ========================================================
        FOOTER
-    ------------------------------------------------------- */
+       ======================================================== */
 
     .footer {
         text-align: center;
+
         color: #7890a0;
+
         font-size: 13px;
+
         margin-top: 40px;
+
         padding-top: 20px;
-        border-top: 1px solid rgba(30,144,255,0.10);
+
+        border-top:
+            1px solid rgba(30, 144, 255, 0.10);
     }
 
     </style>
@@ -463,17 +514,14 @@ class GSDP(keras.layers.Layer):
 
 required_files = {
 
-    "CT Verifier":
-        CT_VERIFIER_PATH,
+    "CT Verifier": CT_VERIFIER_PATH,
 
     "GSFF Feature Extractor":
         FEATURE_EXTRACTOR_PATH,
 
-    "RobustScaler":
-        SCALER_PATH,
+    "RobustScaler": SCALER_PATH,
 
-    "SVM Classifier":
-        SVM_PATH
+    "SVM Classifier": SVM_PATH
 
 }
 
@@ -529,8 +577,11 @@ def load_feature_extractor():
         FEATURE_EXTRACTOR_PATH,
 
         custom_objects={
+
             "GSDP": GSDP,
+
             "GSFF>GSDP": GSDP
+
         },
 
         compile=False,
@@ -542,15 +593,17 @@ def load_feature_extractor():
 
 
 # ============================================================
-# LOAD SCALER
+# LOAD ROBUST SCALER
 # ============================================================
 
 @st.cache_resource
 def load_scaler():
 
-    return joblib.load(
+    scaler = joblib.load(
         SCALER_PATH
     )
+
+    return scaler
 
 
 # ============================================================
@@ -560,9 +613,11 @@ def load_scaler():
 @st.cache_resource
 def load_svm():
 
-    return joblib.load(
+    model = joblib.load(
         SVM_PATH
     )
+
+    return model
 
 
 # ============================================================
@@ -592,6 +647,10 @@ except Exception as e:
 
     st.error(
         "❌ GSFF feature extractor loading failed."
+    )
+
+    st.error(
+        "The saved GSFF model contains the custom GSDP layer."
     )
 
     st.exception(e)
@@ -639,6 +698,7 @@ try:
         ct_verifier.output_shape
     )
 
+
     if ct_verifier_output_shape[-1] != 3:
 
         st.error(
@@ -655,6 +715,7 @@ try:
         )
 
         st.stop()
+
 
 except Exception as e:
 
@@ -677,7 +738,9 @@ try:
         feature_extractor.output_shape
     )
 
+
     expected_feature_dimension = 224
+
 
     if (
         feature_output_shape[-1]
@@ -700,6 +763,7 @@ try:
 
         st.stop()
 
+
 except Exception as e:
 
     st.error(
@@ -717,14 +781,27 @@ except Exception as e:
 
 def check_grayscale_image(image):
 
+    """
+    Determines whether an uploaded image is effectively
+    grayscale.
+
+    A grayscale CT image may be stored as RGB, but if all
+    three channels are almost identical, it is treated as
+    grayscale.
+
+    Genuine coloured images are rejected.
+    """
+
     try:
 
         rgb_image = image.convert("RGB")
+
 
         rgb_array = np.asarray(
             rgb_image,
             dtype=np.float32
         )
+
 
         r = rgb_array[:, :, 0]
 
@@ -737,9 +814,11 @@ def check_grayscale_image(image):
             np.abs(r - g)
         )
 
+
         gb_difference = np.mean(
             np.abs(g - b)
         )
+
 
         rb_difference = np.mean(
             np.abs(r - b)
@@ -749,7 +828,9 @@ def check_grayscale_image(image):
         average_channel_difference = (
 
             rg_difference
+
             + gb_difference
+
             + rb_difference
 
         ) / 3.0
@@ -759,13 +840,14 @@ def check_grayscale_image(image):
 
             return (
                 False,
-                "Colour image detected."
+                "❌ Colour images are not supported. "
+                "Please upload a grayscale CT image."
             )
 
 
         return (
             True,
-            "Grayscale image detected."
+            "✅ Grayscale image detected."
         )
 
 
@@ -773,7 +855,7 @@ def check_grayscale_image(image):
 
         return (
             False,
-            f"Unable to validate image: {e}"
+            f"❌ Unable to validate image: {e}"
         )
 
 
@@ -790,7 +872,7 @@ def validate_image(image):
 
         return (
             False,
-            "Image resolution is too small."
+            "❌ Image resolution is too small."
         )
 
 
@@ -809,6 +891,7 @@ def validate_image(image):
 
     gray = image.convert("L")
 
+
     gray_array = np.asarray(
         gray,
         dtype=np.float32
@@ -824,7 +907,7 @@ def validate_image(image):
 
         return (
             False,
-            "Image appears blank or invalid."
+            "❌ Image appears blank or invalid."
         )
 
 
@@ -837,7 +920,7 @@ def validate_image(image):
 
         return (
             False,
-            "Image is almost completely black."
+            "❌ Image is almost completely black."
         )
 
 
@@ -850,13 +933,13 @@ def validate_image(image):
 
         return (
             False,
-            "Image is almost completely white."
+            "❌ Image is almost completely white."
         )
 
 
     return (
         True,
-        "Image passed basic validation."
+        "✅ Image passed basic validation."
     )
 
 
@@ -868,22 +951,27 @@ def preprocess_for_ct_verifier(image):
 
     image = image.convert("RGB")
 
+
     image = image.resize(
         CT_VERIFIER_IMAGE_SIZE,
         Image.Resampling.LANCZOS
     )
+
 
     image_array = np.asarray(
         image,
         dtype=np.float32
     )
 
+
     image_array /= 255.0
+
 
     image_array = np.expand_dims(
         image_array,
         axis=0
     )
+
 
     return image_array
 
@@ -896,30 +984,35 @@ def preprocess_for_gsff(image):
 
     image = image.convert("RGB")
 
+
     image = image.resize(
         FEATURE_EXTRACTOR_IMAGE_SIZE,
         Image.Resampling.LANCZOS
     )
+
 
     image_array = np.asarray(
         image,
         dtype=np.float32
     )
 
+
     image_array = np.expand_dims(
         image_array,
         axis=0
     )
 
+
     image_array = preprocess_input(
         image_array
     )
+
 
     return image_array
 
 
 # ============================================================
-# MODALITY VERIFICATION
+# CT / X-RAY / MRI VERIFICATION
 # ============================================================
 
 def verify_modality(image):
@@ -951,8 +1044,7 @@ def verify_modality(image):
     if probability_sum > 0:
 
         probabilities = (
-            probabilities
-            / probability_sum
+            probabilities / probability_sum
         )
 
 
@@ -1076,12 +1168,13 @@ st.markdown(
 
         <div class="hero-title">
             🫁 PulmoVision
-            <span class="hero-subtitle-main">
-                AI-Powered Lung Cancer Detection System
-            </span>
         </div>
 
         <div class="hero-subtitle">
+            AI-Powered Lung Cancer Detection System
+        </div>
+
+        <div class="hero-description">
             An AI-powered research prototype for
             lung CT image classification using deep
             feature extraction and machine learning.
@@ -1136,7 +1229,7 @@ with col2:
             </div>
 
             <div class="feature-title">
-                Statistical Fusion
+                Statistical Feature Fusion
             </div>
 
             <div class="feature-text">
@@ -1161,7 +1254,7 @@ with col3:
             </div>
 
             <div class="feature-title">
-                RBF-SVM Classification
+                Intelligent Classification
             </div>
 
             <div class="feature-text">
@@ -1192,7 +1285,7 @@ with st.sidebar:
 
     st.markdown(
         """
-        **AI Pipeline**
+        ### AI Pipeline
 
         Image
         ↓
@@ -1230,6 +1323,7 @@ with st.sidebar:
         "### Classification Classes"
     )
 
+
     st.write("🟢 Normal")
 
     st.write("🟡 Benign")
@@ -1243,6 +1337,7 @@ with st.sidebar:
     st.caption(
         "Research prototype"
     )
+
 
     st.caption(
         "Not intended for clinical diagnosis."
@@ -1267,13 +1362,16 @@ with st.expander(
             "EfficientNetB0"
         )
 
+
         st.write(
             "**Truncation:** Block5c"
         )
 
+
         st.write(
             "**Pooling:** GAP + GSDP"
         )
+
 
         st.write(
             "**Fusion:** GSFF"
@@ -1286,13 +1384,16 @@ with st.expander(
             "**Feature Dimension:** 224"
         )
 
+
         st.write(
             "**Scaler:** RobustScaler"
         )
 
+
         st.write(
             "**Classifier:** RBF-SVM"
         )
+
 
         st.write(
             f"**Modality Threshold:** "
@@ -1348,7 +1449,7 @@ if uploaded_file is not None:
     except Exception as e:
 
         st.error(
-            "Unable to read the uploaded image."
+            "❌ Unable to read the uploaded image."
         )
 
         st.exception(e)
@@ -1395,9 +1496,8 @@ if uploaded_file is not None:
                 </div>
 
                 <div class="feature-text">
-                    The uploaded image will be
-                    processed through the trained
-                    detection pipeline.
+                    The uploaded image is ready
+                    for the AI analysis pipeline.
                 </div>
 
             </div>
@@ -1496,7 +1596,7 @@ if uploaded_file is not None:
                 status_text.empty()
 
                 st.error(
-                    "CT modality verification failed."
+                    "❌ CT modality verification failed."
                 )
 
                 st.exception(e)
@@ -1566,7 +1666,7 @@ if uploaded_file is not None:
 
 
         # ====================================================
-        # ACCEPT ONLY CT
+        # CT VERIFICATION
         # ====================================================
 
         if (
@@ -1576,13 +1676,13 @@ if uploaded_file is not None:
         ):
 
             st.success(
-                f"CT scan verified "
+                f"✅ CT scan verified "
                 f"({modality_confidence * 100:.2f}% confidence)"
             )
 
 
         # ====================================================
-        # REJECT X-RAY
+        # X-RAY
         # ====================================================
 
         elif modality == "CHEST_XRAY":
@@ -1592,19 +1692,19 @@ if uploaded_file is not None:
             status_text.empty()
 
             st.error(
-                "Chest X-ray detected."
+                "❌ Chest X-ray detected."
             )
 
             st.warning(
-                "The image could not be processed "
-                "by the lung cancer classifier."
+                "This image is not suitable for "
+                "the CT-based lung cancer analysis."
             )
 
             st.stop()
 
 
         # ====================================================
-        # REJECT MRI
+        # MRI
         # ====================================================
 
         elif modality == "MRI":
@@ -1614,12 +1714,12 @@ if uploaded_file is not None:
             status_text.empty()
 
             st.error(
-                "MRI image detected."
+                "❌ MRI image detected."
             )
 
             st.warning(
-                "The image could not be processed "
-                "by the lung cancer classifier."
+                "This image is not suitable for "
+                "the CT-based lung cancer analysis."
             )
 
             st.stop()
@@ -1636,8 +1736,8 @@ if uploaded_file is not None:
             status_text.empty()
 
             st.error(
-                "The image could not be confidently "
-                "verified for analysis."
+                "❌ The image could not be confidently "
+                "verified for CT analysis."
             )
 
             st.stop()
@@ -1678,7 +1778,7 @@ if uploaded_file is not None:
                 status_text.empty()
 
                 st.error(
-                    "Lung cancer prediction failed."
+                    "❌ Lung cancer prediction failed."
                 )
 
                 st.exception(e)
@@ -1692,7 +1792,7 @@ if uploaded_file is not None:
 
 
         status_text.write(
-            "Analysis completed successfully."
+            "✅ Analysis completed successfully."
         )
 
 
@@ -1712,8 +1812,6 @@ if uploaded_file is not None:
 
             result_message = "Normal"
 
-            result_box = "success"
-
 
         elif predicted_class == "Benign":
 
@@ -1721,16 +1819,12 @@ if uploaded_file is not None:
 
             result_message = "Benign"
 
-            result_box = "warning"
-
 
         else:
 
             result_icon = "🔴"
 
             result_message = "Malignant"
-
-            result_box = "error"
 
 
         st.markdown(
@@ -1753,7 +1847,7 @@ if uploaded_file is not None:
 
 
         # ====================================================
-        # STREAMLIT RESULT MESSAGE
+        # RESULT MESSAGE
         # ====================================================
 
         if predicted_class == "Normal":
@@ -1762,11 +1856,13 @@ if uploaded_file is not None:
                 "The model classified the image as Normal."
             )
 
+
         elif predicted_class == "Benign":
 
             st.warning(
                 "The model classified the image as Benign."
             )
+
 
         else:
 
@@ -1857,14 +1953,17 @@ if uploaded_file is not None:
                     "Verified modality: CT"
                 )
 
+
                 st.write(
                     f"CT verification confidence: "
                     f"{modality_confidence * 100:.2f}%"
                 )
 
+
                 st.write(
                     "Feature extractor: EfficientNetB0"
                 )
+
 
                 st.write(
                     "Truncation: Block5c"
@@ -1877,13 +1976,16 @@ if uploaded_file is not None:
                     "Pooling: GAP + GSDP"
                 )
 
+
                 st.write(
                     "Fusion: GSFF"
                 )
 
+
                 st.write(
                     "Feature dimension: 224"
                 )
+
 
                 st.write(
                     "Classifier: RBF-SVM"
@@ -1911,7 +2013,9 @@ st.markdown(
     <div class="footer">
 
         🫁 <b>PulmoVision</b>
+
         <br>
+
         <b>AI-Powered Lung Cancer Detection System</b>
 
         <br><br>
