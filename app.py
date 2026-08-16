@@ -58,7 +58,7 @@ st.set_page_config(
 # ============================================================
 
 BASE_DIR = Path(__file__).resolve().parent
-LUNG_ICON_PATH = BASE_DIR / ""
+LUNG_ICON_PATH = BASE_DIR / "Lung_Icon.png"
 
 
 # ============================================================
