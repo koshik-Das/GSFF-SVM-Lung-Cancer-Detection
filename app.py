@@ -862,20 +862,44 @@ def predict_lung_cancer(image):
         probabilities
     )
 
-
 # ============================================================
 # HEADER
 # ============================================================
 
-st.title(
-    "🫁 PulmoVision"
-)
+header_col1, header_col2 = st.columns([1, 5])
 
+with header_col1:
+    if LUNG_ICON_PATH.exists():
+        st.image(
+            str(LUNG_ICON_PATH),
+            width=110
+        )
 
-st.subheader(
-    "AI-Powered Lung Cancer Detection System"
-)
+with header_col2:
+    st.markdown(
+        """
+        <h1 style="
+            margin-top: 15px;
+            margin-bottom: 5px;
+            font-size: 42px;
+        ">
+            PulmoVision
+        </h1>
+        """,
+        unsafe_allow_html=True
+    )
 
+    st.markdown(
+        """
+        <h4 style="
+            margin-top: 0px;
+            font-weight: 500;
+        ">
+            AI-Powered Lung Cancer Detection System
+        </h4>
+        """,
+        unsafe_allow_html=True
+    )
 
 st.write(
     "An AI-powered research prototype for "
@@ -883,10 +907,12 @@ st.write(
     "feature extraction and machine learning."
 )
 
-
 st.info(
     "Upload a grayscale lung CT image for analysis."
 )
+
+
+
 
 
 # ============================================================
