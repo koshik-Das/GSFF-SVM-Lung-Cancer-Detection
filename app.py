@@ -1485,9 +1485,9 @@ def create_pdf_report(
 
         leftMargin=14 * mm,
 
-        topMargin=12 * mm,
+        topMargin=10 * mm,
 
-        bottomMargin=12 * mm,
+        bottomMargin=10 * mm,
     )
 
 
@@ -1497,6 +1497,84 @@ def create_pdf_report(
 
     styles = (
         getSampleStyleSheet()
+    )
+
+
+    title_style = ParagraphStyle(
+
+        "ReportTitle",
+
+        parent=styles["Title"],
+
+        alignment=TA_CENTER,
+
+        fontName="Helvetica-Bold",
+
+        fontSize=18,
+
+        leading=21,
+
+        spaceAfter=2,
+
+        textColor=colors.black,
+    )
+
+
+    system_title_style = ParagraphStyle(
+
+        "SystemTitle",
+
+        parent=styles["Normal"],
+
+        alignment=TA_CENTER,
+
+        fontName="Helvetica-Bold",
+
+        fontSize=16,
+
+        leading=19,
+
+        spaceAfter=10,
+
+        textColor=colors.black,
+    )
+
+
+    report_title_style = ParagraphStyle(
+
+        "ReportSubtitle",
+
+        parent=styles["Normal"],
+
+        alignment=TA_CENTER,
+
+        fontName="Helvetica",
+
+        fontSize=11,
+
+        leading=14,
+
+        spaceAfter=12,
+
+        textColor=colors.black,
+    )
+
+
+    date_style = ParagraphStyle(
+
+        "ReportDate",
+
+        parent=styles["Normal"],
+
+        fontName="Helvetica",
+
+        fontSize=10,
+
+        leading=13,
+
+        spaceAfter=10,
+
+        textColor=colors.black,
     )
 
 
@@ -1514,7 +1592,25 @@ def create_pdf_report(
 
         spaceBefore=0,
 
-        spaceAfter=8,
+        spaceAfter=7,
+
+        textColor=colors.black,
+    )
+
+
+    disclaimer_style = ParagraphStyle(
+
+        "Disclaimer",
+
+        parent=styles["Normal"],
+
+        fontName="Helvetica",
+
+        fontSize=9,
+
+        leading=12,
+
+        spaceBefore=10,
 
         textColor=colors.black,
     )
@@ -1524,7 +1620,241 @@ def create_pdf_report(
 
 
     # ========================================================
-    # MEDICAL IMAGE MODALITY
+    # REPORT HEADER
+    # ========================================================
+
+    story.append(
+
+        Paragraph(
+
+            "PulmoVision",
+
+            title_style,
+        )
+    )
+
+
+    story.append(
+
+        Paragraph(
+
+            "AI-Powered Lung Cancer Detection System",
+
+            system_title_style,
+        )
+    )
+
+
+    story.append(
+
+        Paragraph(
+
+            "Medical Image Analysis Report",
+
+            report_title_style,
+        )
+    )
+
+
+    # ========================================================
+    # ANALYSIS DATE
+    # ========================================================
+
+    report_time = (
+        datetime.now().strftime(
+            "%d %B %Y, %I:%M:%S %p"
+        )
+    )
+
+
+    story.append(
+
+        Paragraph(
+
+            f"<b>Analysis Date:</b> {report_time}",
+
+            date_style,
+        )
+    )
+
+
+    # ========================================================
+    # UPLOADED MEDICAL IMAGE
+    # ========================================================
+
+    image_buffer = (
+        io.BytesIO()
+    )
+
+
+    image.convert(
+        "RGB"
+    ).save(
+
+        image_buffer,
+
+        format="PNG"
+    )
+
+
+    image_buffer.seek(
+        0
+    )
+
+
+    image_width, image_height = (
+        image.size
+    )
+
+
+    max_image_width = (
+        100 * mm
+    )
+
+
+    max_image_height = (
+        92 * mm
+    )
+
+
+    image_scale = min(
+
+        max_image_width / image_width,
+
+        max_image_height / image_height,
+    )
+
+
+    report_image = RLImage(
+
+        image_buffer,
+
+        width=(
+            image_width * image_scale
+        ),
+
+        height=(
+            image_height * image_scale
+        ),
+    )
+
+
+    report_image.hAlign = (
+        "CENTER"
+    )
+
+
+    story.append(
+        report_image
+    )
+
+
+    story.append(
+        Spacer(
+            1,
+            10
+        )
+    )
+
+
+    # ========================================================
+    # TABLE STYLE HELPER
+    # ========================================================
+
+    def apply_report_table_style(
+        table
+    ):
+
+        table.setStyle(
+
+            TableStyle(
+
+                [
+
+                    (
+                        "BACKGROUND",
+                        (0, 0),
+                        (-1, 0),
+                        colors.lightgrey
+                    ),
+
+                    (
+                        "GRID",
+                        (0, 0),
+                        (-1, -1),
+                        0.5,
+                        colors.grey
+                    ),
+
+                    (
+                        "FONTNAME",
+                        (0, 0),
+                        (-1, 0),
+                        "Helvetica-Bold"
+                    ),
+
+                    (
+                        "FONTNAME",
+                        (0, 1),
+                        (-1, -1),
+                        "Helvetica"
+                    ),
+
+                    (
+                        "FONTSIZE",
+                        (0, 0),
+                        (-1, -1),
+                        10
+                    ),
+
+                    (
+                        "ALIGN",
+                        (0, 0),
+                        (-1, -1),
+                        "LEFT"
+                    ),
+
+                    (
+                        "VALIGN",
+                        (0, 0),
+                        (-1, -1),
+                        "MIDDLE"
+                    ),
+
+                    (
+                        "LEFTPADDING",
+                        (0, 0),
+                        (-1, -1),
+                        7
+                    ),
+
+                    (
+                        "RIGHTPADDING",
+                        (0, 0),
+                        (-1, -1),
+                        7
+                    ),
+
+                    (
+                        "TOPPADDING",
+                        (0, 0),
+                        (-1, -1),
+                        4
+                    ),
+
+                    (
+                        "BOTTOMPADDING",
+                        (0, 0),
+                        (-1, -1),
+                        4
+                    ),
+                ]
+            )
+        )
+
+
+    # ========================================================
+    # 1. MEDICAL IMAGE MODALITY
     # ========================================================
 
     story.append(
@@ -1547,31 +1877,15 @@ def create_pdf_report(
 
         [
             "Detected Modality",
-            modality
+            friendly_modality_name(
+                modality
+            )
         ],
 
         [
             "Modality Confidence",
 
             f"{modality_confidence * 100:.2f}%"
-        ],
-
-        [
-            "Chest X-ray Probability",
-
-            f"{modality_probabilities[0] * 100:.2f}%"
-        ],
-
-        [
-            "CT Probability",
-
-            f"{modality_probabilities[1] * 100:.2f}%"
-        ],
-
-        [
-            "MRI Probability",
-
-            f"{modality_probabilities[2] * 100:.2f}%"
         ],
     ]
 
@@ -1589,91 +1903,8 @@ def create_pdf_report(
     )
 
 
-    modality_table.setStyle(
-
-        TableStyle(
-
-            [
-
-                (
-                    "BACKGROUND",
-                    (0, 0),
-                    (-1, 0),
-                    colors.lightgrey
-                ),
-
-                (
-                    "GRID",
-                    (0, 0),
-                    (-1, -1),
-                    0.5,
-                    colors.grey
-                ),
-
-                (
-                    "FONTNAME",
-                    (0, 0),
-                    (-1, 0),
-                    "Helvetica-Bold"
-                ),
-
-                (
-                    "FONTNAME",
-                    (0, 1),
-                    (-1, -1),
-                    "Helvetica"
-                ),
-
-                (
-                    "FONTSIZE",
-                    (0, 0),
-                    (-1, -1),
-                    10
-                ),
-
-                (
-                    "ALIGN",
-                    (0, 0),
-                    (-1, -1),
-                    "LEFT"
-                ),
-
-                (
-                    "VALIGN",
-                    (0, 0),
-                    (-1, -1),
-                    "MIDDLE"
-                ),
-
-                (
-                    "LEFTPADDING",
-                    (0, 0),
-                    (-1, -1),
-                    7
-                ),
-
-                (
-                    "RIGHTPADDING",
-                    (0, 0),
-                    (-1, -1),
-                    7
-                ),
-
-                (
-                    "TOPPADDING",
-                    (0, 0),
-                    (-1, -1),
-                    4
-                ),
-
-                (
-                    "BOTTOMPADDING",
-                    (0, 0),
-                    (-1, -1),
-                    4
-                ),
-            ]
-        )
+    apply_report_table_style(
+        modality_table
     )
 
 
@@ -1685,20 +1916,86 @@ def create_pdf_report(
     story.append(
         Spacer(
             1,
-            16
+            10
         )
     )
 
 
     # ========================================================
-    # LUNG CANCER CLASSIFICATION
+    # 2. CT VERIFICATION
     # ========================================================
 
     story.append(
 
         Paragraph(
 
-            "2. Lung Cancer Classification",
+            "2. CT Verification",
+
+            heading_style,
+        )
+    )
+
+
+    ct_verification_data = [
+
+        [
+            "Parameter",
+            "Result"
+        ],
+
+        [
+            "CT Verification",
+            "CT"
+        ],
+
+        [
+            "CT Probability",
+
+            f"{modality_probabilities[1] * 100:.2f}%"
+        ],
+    ]
+
+
+    ct_verification_table = Table(
+
+        ct_verification_data,
+
+        colWidths=[
+            84 * mm,
+            84 * mm
+        ],
+
+        hAlign="CENTER",
+    )
+
+
+    apply_report_table_style(
+        ct_verification_table
+    )
+
+
+    story.append(
+        ct_verification_table
+    )
+
+
+    story.append(
+        Spacer(
+            1,
+            10
+        )
+    )
+
+
+    # ========================================================
+    # 3. LUNG CANCER DETECTION
+    # ========================================================
+
+    story.append(
+
+        Paragraph(
+
+            "3. Lung Cancer Detection",
 
             heading_style,
         )
@@ -1713,32 +2010,14 @@ def create_pdf_report(
         ],
 
         [
-            "Prediction",
+            "Final Diagnosis",
             predicted_class
         ],
 
         [
-            "Prediction Confidence",
+            "Diagnosis Confidence",
 
             f"{prediction_confidence * 100:.2f}%"
-        ],
-
-        [
-            "Normal Probability",
-
-            f"{class_probabilities[0] * 100:.2f}%"
-        ],
-
-        [
-            "Benign Probability",
-
-            f"{class_probabilities[1] * 100:.2f}%"
-        ],
-
-        [
-            "Malignant Probability",
-
-            f"{class_probabilities[2] * 100:.2f}%"
         ],
     ]
 
@@ -1756,96 +2035,31 @@ def create_pdf_report(
     )
 
 
-    result_table.setStyle(
-
-        TableStyle(
-
-            [
-
-                (
-                    "BACKGROUND",
-                    (0, 0),
-                    (-1, 0),
-                    colors.lightgrey
-                ),
-
-                (
-                    "GRID",
-                    (0, 0),
-                    (-1, -1),
-                    0.5,
-                    colors.grey
-                ),
-
-                (
-                    "FONTNAME",
-                    (0, 0),
-                    (-1, 0),
-                    "Helvetica-Bold"
-                ),
-
-                (
-                    "FONTNAME",
-                    (0, 1),
-                    (-1, -1),
-                    "Helvetica"
-                ),
-
-                (
-                    "FONTSIZE",
-                    (0, 0),
-                    (-1, -1),
-                    10
-                ),
-
-                (
-                    "ALIGN",
-                    (0, 0),
-                    (-1, -1),
-                    "LEFT"
-                ),
-
-                (
-                    "VALIGN",
-                    (0, 0),
-                    (-1, -1),
-                    "MIDDLE"
-                ),
-
-                (
-                    "LEFTPADDING",
-                    (0, 0),
-                    (-1, -1),
-                    7
-                ),
-
-                (
-                    "RIGHTPADDING",
-                    (0, 0),
-                    (-1, -1),
-                    7
-                ),
-
-                (
-                    "TOPPADDING",
-                    (0, 0),
-                    (-1, -1),
-                    4
-                ),
-
-                (
-                    "BOTTOMPADDING",
-                    (0, 0),
-                    (-1, -1),
-                    4
-                ),
-            ]
-        )
+    apply_report_table_style(
+        result_table
     )
 
 
     story.append(
         result_table
+    )
+
+
+    # ========================================================
+    # DISCLAIMER
+    # ========================================================
+
+    story.append(
+
+        Paragraph(
+
+            "<b>Disclaimer:</b> "
+            "This application is a research prototype and is "
+            "not intended to provide clinical diagnosis or "
+            "replace professional medical evaluation.",
+
+            disclaimer_style,
+        )
     )
 
 
