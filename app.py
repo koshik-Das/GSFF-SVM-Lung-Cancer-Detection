@@ -3,17 +3,21 @@
 # PulmoVision
 # AI-Powered Lung Cancer Detection System
 #
-# Pipeline:
+# PIPELINE
 #
 # Uploaded Image
 #       ↓
-# Image Validation
+# Basic Image Validation
 #       ↓
-# CT / X-ray / MRI Modality Verification
+# Colour Image Detection
 #       ↓
-# CT
+# CT / Chest X-ray / MRI Modality Classification
 #       ↓
-# EfficientNetB0 Block5c
+# CT Verification
+#       ↓
+# EfficientNetB0
+#       ↓
+# Block5c
 #       ↓
 # GAP + GSDP
 #       ↓
@@ -24,10 +28,19 @@
 # RBF-SVM
 #       ↓
 # Normal / Benign / Malignant
+#
+# NO GRAD-CAM
+# ============================================================
+
+
+# ============================================================
+# 1. IMPORTS
 # ============================================================
 
 import os
+import io
 from pathlib import Path
+from datetime import datetime
 
 import numpy as np
 import streamlit as st
@@ -41,28 +54,48 @@ from tensorflow.keras.applications.efficientnet import (
     preprocess_input
 )
 
+from reportlab.lib import colors
+from reportlab.lib.enums import TA_CENTER
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import (
+    getSampleStyleSheet,
+    ParagraphStyle
+)
+from reportlab.lib.units import mm
+from reportlab.platypus import (
+    SimpleDocTemplate,
+    Paragraph,
+    Spacer,
+    Table,
+    TableStyle,
+    Image as RLImage
+)
+
 
 # ============================================================
-# STREAMLIT PAGE CONFIGURATION
+# 2. STREAMLIT CONFIGURATION
 # ============================================================
 
 st.set_page_config(
     page_title="PulmoVision",
     page_icon="🫁",
-    layout="centered"
+    layout="wide"
 )
 
 
 # ============================================================
-# BASE DIRECTORY
+# 3. BASE DIRECTORY
 # ============================================================
 
 BASE_DIR = Path(__file__).resolve().parent
-LUNG_ICON_PATH = BASE_DIR / "Lung_Icon.png"
+
+LUNG_ICON_PATH = (
+    BASE_DIR / "Lung_Icon.png"
+)
 
 
 # ============================================================
-# MODEL FILE PATHS
+# 4. MODEL FILE PATHS
 # ============================================================
 
 CT_VERIFIER_PATH = (
@@ -83,16 +116,38 @@ SVM_PATH = (
 
 
 # ============================================================
-# SETTINGS
+# 5. IMAGE SETTINGS
 # ============================================================
 
-CT_VERIFIER_IMAGE_SIZE = (128, 128)
+CT_VERIFIER_IMAGE_SIZE = (
+    128,
+    128
+)
 
-FEATURE_EXTRACTOR_IMAGE_SIZE = (224, 224)
+FEATURE_EXTRACTOR_IMAGE_SIZE = (
+    224,
+    224
+)
 
+
+# ============================================================
+# 6. THRESHOLDS
+# ============================================================
+
+# Minimum confidence required for CT verification
 MODALITY_THRESHOLD = 0.60
 
 
+# Average channel difference above this value
+# indicates a genuine colour image.
+COLOR_TOLERANCE = 3.0
+
+
+# ============================================================
+# 7. CLASS MAPPINGS
+# ============================================================
+
+# Lung cancer classification
 class_names = [
     "Normal",
     "Benign",
@@ -100,6 +155,14 @@ class_names = [
 ]
 
 
+# Modality classifier mapping
+#
+# This exactly matches your training code:
+#
+# 0 = CHEST_XRAY
+# 1 = CT
+# 2 = MRI
+#
 modality_names = [
     "CHEST_XRAY",
     "CT",
@@ -108,10 +171,10 @@ modality_names = [
 
 
 # ============================================================
-# CUSTOM GSDP LAYER
+# 8. CUSTOM GSDP LAYER
 # ============================================================
 #
-# Your trained GSFF model contains a custom GSDP layer.
+# Your saved GSFF feature extractor contains GSDP.
 #
 # GSDP:
 #
@@ -124,21 +187,36 @@ modality_names = [
 # Output:
 #     (batch, 112)
 #
-# This is NOT GMP.
+# GAP  = 112 features
+# GSDP = 112 features
+#
+# GSFF = 224 features
+#
+# IMPORTANT:
+# There is NO GMP here.
 #
 # ============================================================
+
 
 @keras.saving.register_keras_serializable(
     package="GSFF"
 )
 class GSDP(keras.layers.Layer):
 
-    def __init__(self, **kwargs):
+    def __init__(
+        self,
+        **kwargs
+    ):
 
-        super().__init__(**kwargs)
+        super().__init__(
+            **kwargs
+        )
 
 
-    def call(self, inputs):
+    def call(
+        self,
+        inputs
+    ):
 
         return keras.ops.std(
             inputs,
@@ -154,39 +232,28 @@ class GSDP(keras.layers.Layer):
 
 
 # ============================================================
-# CHECK REQUIRED MODEL FILES
+# 9. MODEL FILE VALIDATION
 # ============================================================
 
-required_files = {
+def validate_model_file(
+    path,
+    model_name
+):
 
-    "CT Verifier": CT_VERIFIER_PATH,
-
-    "GSFF Feature Extractor":
-        FEATURE_EXTRACTOR_PATH,
-
-    "RobustScaler": SCALER_PATH,
-
-    "SVM Classifier": SVM_PATH
-
-}
-
-
-for model_name, model_path in required_files.items():
-
-    if not model_path.exists():
+    if not path.exists():
 
         st.error(
             f"❌ {model_name} was not found."
         )
 
         st.code(
-            str(model_path)
+            str(path)
         )
 
         st.stop()
 
 
-    if model_path.stat().st_size == 0:
+    if path.stat().st_size == 0:
 
         st.error(
             f"❌ {model_name} file is empty."
@@ -196,22 +263,56 @@ for model_name, model_path in required_files.items():
 
 
 # ============================================================
-# LOAD CT VERIFIER
+# 10. CHECK ALL REQUIRED FILES
+# ============================================================
+
+required_files = {
+
+    "CT Verifier":
+        CT_VERIFIER_PATH,
+
+    "GSFF Feature Extractor":
+        FEATURE_EXTRACTOR_PATH,
+
+    "RobustScaler":
+        SCALER_PATH,
+
+    "SVM Classifier":
+        SVM_PATH
+
+}
+
+
+for model_name, model_path in (
+    required_files.items()
+):
+
+    validate_model_file(
+        model_path,
+        model_name
+    )
+
+
+# ============================================================
+# 11. LOAD CT VERIFIER
 # ============================================================
 
 @st.cache_resource
 def load_ct_verifier():
 
     model = keras.models.load_model(
+
         CT_VERIFIER_PATH,
+
         compile=False
+
     )
 
     return model
 
 
 # ============================================================
-# LOAD GSFF FEATURE EXTRACTOR
+# 12. LOAD GSFF FEATURE EXTRACTOR
 # ============================================================
 
 @st.cache_resource
@@ -223,22 +324,25 @@ def load_feature_extractor():
 
         custom_objects={
 
-            "GSDP": GSDP,
+            "GSDP":
+                GSDP,
 
-            "GSFF>GSDP": GSDP
+            "GSFF>GSDP":
+                GSDP
 
         },
 
         compile=False,
 
         safe_mode=False
+
     )
 
     return model
 
 
 # ============================================================
-# LOAD ROBUST SCALER
+# 13. LOAD ROBUST SCALER
 # ============================================================
 
 @st.cache_resource
@@ -252,7 +356,7 @@ def load_scaler():
 
 
 # ============================================================
-# LOAD SVM
+# 14. LOAD SVM
 # ============================================================
 
 @st.cache_resource
@@ -266,12 +370,14 @@ def load_svm():
 
 
 # ============================================================
-# LOAD ALL MODELS
+# 15. LOAD ALL MODELS
 # ============================================================
 
 try:
 
-    ct_verifier = load_ct_verifier()
+    ct_verifier = (
+        load_ct_verifier()
+    )
 
 except Exception as e:
 
@@ -286,7 +392,9 @@ except Exception as e:
 
 try:
 
-    feature_extractor = load_feature_extractor()
+    feature_extractor = (
+        load_feature_extractor()
+    )
 
 except Exception as e:
 
@@ -295,7 +403,9 @@ except Exception as e:
     )
 
     st.error(
-        "The saved GSFF model contains the custom GSDP layer."
+        "Make sure this is the same "
+        "GSFF_Feature_Extractor.keras "
+        "created during training."
     )
 
     st.exception(e)
@@ -334,29 +444,28 @@ except Exception as e:
 
 
 # ============================================================
-# VERIFY CT VERIFIER OUTPUT
+# 16. VERIFY CT VERIFIER OUTPUT
 # ============================================================
 
 try:
 
-    ct_verifier_output_shape = (
+    ct_output_shape = (
         ct_verifier.output_shape
     )
 
 
-    if ct_verifier_output_shape[-1] != 3:
+    if ct_output_shape[-1] != 3:
 
         st.error(
             "❌ CT verifier output mismatch."
         )
 
         st.write(
-            "Expected output: 3 classes"
+            "Expected: 3 classes"
         )
 
         st.write(
-            f"Actual output: "
-            f"{ct_verifier_output_shape}"
+            f"Actual: {ct_output_shape}"
         )
 
         st.stop()
@@ -374,7 +483,7 @@ except Exception as e:
 
 
 # ============================================================
-# VERIFY GSFF FEATURE DIMENSION
+# 17. VERIFY GSFF FEATURE DIMENSION
 # ============================================================
 
 try:
@@ -421,25 +530,378 @@ except Exception as e:
 
 
 # ============================================================
-# IMAGE COLOUR VALIDATION
+# 18. SESSION STATE
 # ============================================================
 
-def check_grayscale_image(image):
+if (
+    "pdf_report"
+    not in st.session_state
+):
+
+    st.session_state.pdf_report = None
+
+
+# ============================================================
+# 19. CUSTOM CSS
+# ============================================================
+
+st.markdown(
+    """
+    <style>
+
+    .main-title {
+        text-align: center;
+        font-size: 42px;
+        font-weight: 750;
+        line-height: 1.15;
+        margin-top: 5px;
+        margin-bottom: 8px;
+    }
+
+
+    .brand-name {
+        text-align: center;
+        font-size: 17px;
+        font-weight: 600;
+        margin-top: 4px;
+        margin-bottom: 8px;
+    }
+
+
+    .subtitle {
+        text-align: center;
+        font-size: 16px;
+        line-height: 1.6;
+        margin-top: 8px;
+        margin-bottom: 25px;
+    }
+
+
+    .result-box {
+        padding: 22px;
+        border-radius: 14px;
+        border: 1px solid #d8d8d8;
+        margin-top: 15px;
+        margin-bottom: 15px;
+    }
+
+
+    .modality-result {
+        background-color: #eef5ff;
+    }
+
+
+    .normal-result {
+        background-color: #eaf8ed;
+    }
+
+
+    .benign-result {
+        background-color: #fff7df;
+    }
+
+
+    .malignant-result {
+        background-color: #fdeaea;
+    }
+
+
+    .section-title {
+        text-align: center;
+        font-size: 26px;
+        font-weight: 650;
+        margin-top: 15px;
+        margin-bottom: 12px;
+    }
+
+
+    .info-text {
+        text-align: center;
+        font-size: 15px;
+        line-height: 1.5;
+    }
+
+
+    .pipeline-box {
+        padding: 15px;
+        border-radius: 12px;
+        border: 1px solid #dddddd;
+        background-color: rgba(128,128,128,0.05);
+        line-height: 1.8;
+    }
+
+
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+
+# ============================================================
+# 20. HEADER
+# ============================================================
+
+title_col1, title_col2 = (
+    st.columns(
+        [0.8, 7.2],
+        vertical_alignment="center"
+    )
+)
+
+
+# ============================================================
+# HEADER ICON
+# ============================================================
+
+with title_col1:
+
+    if LUNG_ICON_PATH.exists():
+
+        st.image(
+            str(LUNG_ICON_PATH),
+            width=95
+        )
+
+    else:
+
+        st.markdown(
+            """
+            <div style="
+                font-size:70px;
+                text-align:center;
+                line-height:1;
+            ">
+                🫁
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+
+# ============================================================
+# HEADER TEXT
+# ============================================================
+
+with title_col2:
+
+    st.markdown(
+        """
+        <div class="main-title">
+            PulmoVision
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+
+    st.markdown(
+        """
+        <div class="brand-name">
+            AI-Powered Lung Cancer Detection System
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+
+# ============================================================
+# SUBTITLE
+# ============================================================
+
+st.markdown(
+    """
+    <div class="subtitle">
+        Intelligent analysis of lung CT images using
+        deep feature extraction and machine learning.
+    </div>
+    """,
+    unsafe_allow_html=True
+)
+
+
+st.info(
+    "Upload a lung CT image to begin the analysis."
+)
+
+
+# ============================================================
+# 21. SIDEBAR
+# ============================================================
+
+with st.sidebar:
+
+    st.header(
+        "🫁 PulmoVision"
+    )
+
+
+    st.write(
+        "AI-Powered Lung Cancer "
+        "Detection System"
+    )
+
+
+    st.divider()
+
+
+    st.write(
+        "**AI Pipeline**"
+    )
+
+
+    st.markdown(
+        """
+        <div class="pipeline-box">
+
+        🖼️ Image<br>
+        ↓<br>
+        🔍 Image Validation<br>
+        ↓<br>
+        🩻 Modality Verification<br>
+        ↓<br>
+        🫁 CT<br>
+        ↓<br>
+        🧠 EfficientNetB0<br>
+        ↓<br>
+        📐 Block5c<br>
+        ↓<br>
+        📊 GAP + GSDP<br>
+        ↓<br>
+        🔗 GSFF Fusion<br>
+        ↓<br>
+        ⚖️ RobustScaler<br>
+        ↓<br>
+        🎯 RBF-SVM<br>
+        ↓<br>
+        📋 Classification
+
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+
+    st.divider()
+
+
+    st.write(
+        "**Classification Classes**"
+    )
+
+
+    st.write(
+        "🟢 Normal"
+    )
+
+    st.write(
+        "🟡 Benign"
+    )
+
+    st.write(
+        "🔴 Malignant"
+    )
+
+
+    st.divider()
+
+
+    st.caption(
+        "Research prototype. "
+        "Not intended for clinical diagnosis."
+    )
+
+
+# ============================================================
+# 22. MODEL INFORMATION
+# ============================================================
+
+with st.expander(
+    "⚙️ Model Information"
+):
+
+    st.write(
+        f"CT verifier: "
+        f"{CT_VERIFIER_PATH.name}"
+    )
+
+
+    st.write(
+        f"GSFF extractor: "
+        f"{FEATURE_EXTRACTOR_PATH.name}"
+    )
+
+
+    st.write(
+        "Modality classifier: "
+        "MobileNetV2"
+    )
+
+
+    st.write(
+        "Modality input: "
+        "128 × 128 × 3"
+    )
+
+
+    st.write(
+        "Feature extractor: "
+        "EfficientNetB0"
+    )
+
+
+    st.write(
+        "Truncation: Block5c"
+    )
+
+
+    st.write(
+        "Feature fusion: GAP + GSDP"
+    )
+
+
+    st.write(
+        "Feature dimension: 224"
+    )
+
+
+    st.write(
+        "Scaler: RobustScaler"
+    )
+
+
+    st.write(
+        "Classifier: RBF-SVM"
+    )
+
+
+    st.write(
+        f"CT confidence threshold: "
+        f"{MODALITY_THRESHOLD:.2f}"
+    )
+
+
+# ============================================================
+# 23. IMAGE COLOUR DETECTION
+# ============================================================
+
+def check_grayscale_image(
+    image
+):
 
     """
-    Determines whether an uploaded image is effectively
-    grayscale.
+    Determines whether the uploaded image
+    is effectively grayscale.
 
-    A grayscale CT image may be stored as RGB, but if all
-    three channels are almost identical, it is treated as
-    grayscale.
-
-    Genuine coloured images are rejected.
+    A grayscale CT image can be stored as RGB.
+    If RGB channels are almost identical,
+    it is treated as grayscale.
     """
 
     try:
 
-        rgb_image = image.convert("RGB")
+        rgb_image = (
+            image.convert("RGB")
+        )
 
 
         rgb_array = np.asarray(
@@ -470,23 +932,25 @@ def check_grayscale_image(image):
         )
 
 
-        average_channel_difference = (
+        average_difference = (
 
             rg_difference
-
-            + gb_difference
-
-            + rb_difference
+            +
+            gb_difference
+            +
+            rb_difference
 
         ) / 3.0
 
 
-        if average_channel_difference > 3.0:
+        if (
+            average_difference
+            > COLOR_TOLERANCE
+        ):
 
             return (
                 False,
-                "❌ Colour images are not supported. "
-                "Please upload a grayscale CT image."
+                "❌ Colour image detected."
             )
 
 
@@ -500,24 +964,32 @@ def check_grayscale_image(image):
 
         return (
             False,
-            f"❌ Unable to validate image: {e}"
+            f"❌ Image colour validation failed: {e}"
         )
 
 
 # ============================================================
-# BASIC IMAGE VALIDATION
+# 24. BASIC IMAGE VALIDATION
 # ============================================================
 
-def validate_image(image):
+def validate_image(
+    image
+):
+
+    width, height = (
+        image.size
+    )
+
 
     # --------------------------------------------------------
-    # Check dimensions
+    # Resolution
     # --------------------------------------------------------
 
-    width, height = image.size
-
-
-    if width < 64 or height < 64:
+    if (
+        width < 64
+        or
+        height < 64
+    ):
 
         return (
             False,
@@ -526,11 +998,13 @@ def validate_image(image):
 
 
     # --------------------------------------------------------
-    # Check grayscale
+    # Colour validation
     # --------------------------------------------------------
 
     is_grayscale, message = (
-        check_grayscale_image(image)
+        check_grayscale_image(
+            image
+        )
     )
 
 
@@ -543,7 +1017,7 @@ def validate_image(image):
 
 
     # --------------------------------------------------------
-    # Convert to grayscale for basic statistics
+    # Grayscale statistics
     # --------------------------------------------------------
 
     gray = image.convert("L")
@@ -556,15 +1030,19 @@ def validate_image(image):
 
 
     # --------------------------------------------------------
-    # Blank image check
+    # Blank image
     # --------------------------------------------------------
 
-    standard_deviation = np.std(
-        gray_array
+    standard_deviation = (
+        np.std(
+            gray_array
+        )
     )
 
 
-    if standard_deviation < 8:
+    if (
+        standard_deviation < 8
+    ):
 
         return (
             False,
@@ -573,7 +1051,7 @@ def validate_image(image):
 
 
     # --------------------------------------------------------
-    # Almost completely black
+    # Almost black
     # --------------------------------------------------------
 
     dark_ratio = np.mean(
@@ -581,7 +1059,9 @@ def validate_image(image):
     )
 
 
-    if dark_ratio > 0.98:
+    if (
+        dark_ratio > 0.98
+    ):
 
         return (
             False,
@@ -590,7 +1070,7 @@ def validate_image(image):
 
 
     # --------------------------------------------------------
-    # Almost completely white
+    # Almost white
     # --------------------------------------------------------
 
     bright_ratio = np.mean(
@@ -598,7 +1078,9 @@ def validate_image(image):
     )
 
 
-    if bright_ratio > 0.98:
+    if (
+        bright_ratio > 0.98
+    ):
 
         return (
             False,
@@ -613,12 +1095,16 @@ def validate_image(image):
 
 
 # ============================================================
-# PREPROCESS FOR CT VERIFIER
+# 25. PREPROCESS CT VERIFIER
 # ============================================================
 
-def preprocess_for_ct_verifier(image):
+def preprocess_for_ct_verifier(
+    image
+):
 
-    image = image.convert("RGB")
+    image = image.convert(
+        "RGB"
+    )
 
 
     image = image.resize(
@@ -633,13 +1119,8 @@ def preprocess_for_ct_verifier(image):
     )
 
 
-    # --------------------------------------------------------
-    # Same preprocessing used during modality training
-    #
-    # ImageDataGenerator:
-    #
-    # rescale = 1 / 255
-    # --------------------------------------------------------
+    # Same preprocessing as training:
+    # ImageDataGenerator(rescale=1/255)
 
     image_array /= 255.0
 
@@ -654,12 +1135,16 @@ def preprocess_for_ct_verifier(image):
 
 
 # ============================================================
-# PREPROCESS FOR GSFF
+# 26. PREPROCESS FOR GSFF
 # ============================================================
 
-def preprocess_for_gsff(image):
+def preprocess_for_gsff(
+    image
+):
 
-    image = image.convert("RGB")
+    image = image.convert(
+        "RGB"
+    )
 
 
     image = image.resize(
@@ -680,16 +1165,14 @@ def preprocess_for_gsff(image):
     )
 
 
-    # --------------------------------------------------------
-    # EfficientNet preprocessing
-    #
-    # This matches the training code:
+    # Matches training:
     #
     # X = preprocess_input(...)
-    # --------------------------------------------------------
 
-    image_array = preprocess_input(
-        image_array
+    image_array = (
+        preprocess_input(
+            image_array
+        )
     )
 
 
@@ -697,10 +1180,12 @@ def preprocess_for_gsff(image):
 
 
 # ============================================================
-# CT / X-RAY / MRI VERIFICATION
+# 27. MODALITY VERIFICATION
 # ============================================================
 
-def verify_modality(image):
+def verify_modality(
+    image
+):
 
     image_array = (
         preprocess_for_ct_verifier(
@@ -709,9 +1194,11 @@ def verify_modality(image):
     )
 
 
-    predictions = ct_verifier.predict(
-        image_array,
-        verbose=0
+    predictions = (
+        ct_verifier.predict(
+            image_array,
+            verbose=0
+        )
     )
 
 
@@ -721,35 +1208,43 @@ def verify_modality(image):
     )
 
 
-    # --------------------------------------------------------
     # Safety normalization
-    # --------------------------------------------------------
 
-    probability_sum = np.sum(
-        probabilities
+    probability_sum = (
+        np.sum(
+            probabilities
+        )
     )
 
 
     if probability_sum > 0:
 
         probabilities = (
-            probabilities / probability_sum
+            probabilities
+            /
+            probability_sum
         )
 
 
     predicted_class = int(
-        np.argmax(probabilities)
+        np.argmax(
+            probabilities
+        )
     )
 
 
     confidence = float(
-        probabilities[predicted_class]
+        probabilities[
+            predicted_class
+        ]
     )
 
 
-    modality = modality_names[
-        predicted_class
-    ]
+    modality = (
+        modality_names[
+            predicted_class
+        ]
+    )
 
 
     return (
@@ -760,10 +1255,12 @@ def verify_modality(image):
 
 
 # ============================================================
-# GSFF FEATURE EXTRACTION
+# 28. GSFF FEATURE EXTRACTION
 # ============================================================
 
-def extract_gsff_features(image):
+def extract_gsff_features(
+    image
+):
 
     image_array = (
         preprocess_for_gsff(
@@ -790,13 +1287,15 @@ def extract_gsff_features(image):
 
 
 # ============================================================
-# LUNG CANCER PREDICTION
+# 29. LUNG CANCER PREDICTION
 # ============================================================
 
-def predict_lung_cancer(image):
+def predict_lung_cancer(
+    image
+):
 
     # --------------------------------------------------------
-    # Extract GSFF feature
+    # GSFF feature extraction
     # --------------------------------------------------------
 
     features = (
@@ -818,11 +1317,13 @@ def predict_lung_cancer(image):
 
 
     # --------------------------------------------------------
-    # RBF-SVM prediction
+    # RBF-SVM
     # --------------------------------------------------------
 
-    prediction = svm.predict(
-        scaled_features
+    prediction = (
+        svm.predict(
+            scaled_features
+        )
     )
 
 
@@ -862,198 +1363,515 @@ def predict_lung_cancer(image):
         probabilities
     )
 
-# ============================================================
-# HEADER
-# ============================================================
-
-header_col1, header_col2 = st.columns([1, 5])
-
-with header_col1:
-    if LUNG_ICON_PATH.exists():
-        st.image(
-            str(LUNG_ICON_PATH),
-            width=110
-        )
-
-with header_col2:
-    st.markdown(
-        """
-        <h1 style="
-            margin-top: 15px;
-            margin-bottom: 5px;
-            font-size: 42px;
-        ">
-            PulmoVision
-        </h1>
-        """,
-        unsafe_allow_html=True
-    )
-
-    st.markdown(
-        """
-        <h4 style="
-            margin-top: 0px;
-            font-weight: 500;
-        ">
-            AI-Powered Lung Cancer Detection System
-        </h4>
-        """,
-        unsafe_allow_html=True
-    )
-
-st.write(
-    "An AI-powered research prototype for "
-    "lung CT image classification using deep "
-    "feature extraction and machine learning."
-)
-
-st.info(
-    "Upload a grayscale lung CT image for analysis."
-)
-
-
-
-
 
 # ============================================================
-# SIDEBAR
+# 30. PDF REPORT
 # ============================================================
 
-with st.sidebar:
-
-    st.header(
-        "🫁 PulmoVision"
-    )
-
-
-    st.write(
-        "AI-Powered Lung Cancer Detection System"
-    )
-
-
-    st.divider()
-
-
-    st.write(
-        "**AI Pipeline:**"
-    )
-
-
-    st.write(
-        """
-        Image
-        ↓
-        Modality Verification
-        ↓
-        CT
-        ↓
-        EfficientNetB0
-        ↓
-        Block5c
-        ↓
-        GAP + GSDP
-        ↓
-        GSFF
-        ↓
-        RobustScaler
-        ↓
-        RBF-SVM
-        ↓
-        Classification
-        """
-    )
-
-
-    st.divider()
-
-
-    st.write(
-        "**Classification Classes:**"
-    )
-
-
-    st.write(
-        "🟢 Normal"
-    )
-
-
-    st.write(
-        "🟡 Benign"
-    )
-
-
-    st.write(
-        "🔴 Malignant"
-    )
-
-
-    st.divider()
-
-
-    st.caption(
-        "Research prototype. "
-        "Not intended for clinical diagnosis."
-    )
-
-
-# ============================================================
-# MODEL STATUS
-# ============================================================
-
-with st.expander(
-    "⚙️ Model Information"
+def create_pdf_report(
+    image,
+    modality,
+    modality_confidence,
+    modality_probabilities,
+    predicted_class,
+    prediction_confidence,
+    class_probabilities
 ):
 
-    st.write(
-        f"CT verifier: "
-        f"{CT_VERIFIER_PATH.name}"
+    buffer = io.BytesIO()
+
+
+    document = SimpleDocTemplate(
+
+        buffer,
+
+        pagesize=A4,
+
+        rightMargin=18 * mm,
+
+        leftMargin=18 * mm,
+
+        topMargin=18 * mm,
+
+        bottomMargin=18 * mm
+
     )
 
 
-    st.write(
-        f"GSFF extractor: "
-        f"{FEATURE_EXTRACTOR_PATH.name}"
+    styles = (
+        getSampleStyleSheet()
     )
 
 
-    st.write(
-        "Feature extractor: EfficientNetB0"
+    title_style = ParagraphStyle(
+
+        "ReportTitle",
+
+        parent=styles["Title"],
+
+        alignment=TA_CENTER,
+
+        fontSize=18,
+
+        leading=22,
+
+        spaceAfter=12
+
     )
 
 
-    st.write(
-        "Truncation: Block5c"
+    subtitle_style = ParagraphStyle(
+
+        "ReportSubtitle",
+
+        parent=styles["Normal"],
+
+        alignment=TA_CENTER,
+
+        fontSize=11,
+
+        leading=14,
+
+        spaceAfter=15
+
     )
 
 
-    st.write(
-        "Feature fusion: GAP + GSDP"
+    heading_style = ParagraphStyle(
+
+        "ReportHeading",
+
+        parent=styles["Heading2"],
+
+        fontSize=13,
+
+        leading=16,
+
+        spaceBefore=10,
+
+        spaceAfter=8
+
     )
 
 
-    st.write(
-        "Feature dimension: 224"
+    normal_style = ParagraphStyle(
+
+        "ReportNormal",
+
+        parent=styles["Normal"],
+
+        fontSize=10,
+
+        leading=14
+
     )
 
 
-    st.write(
-        "Scaler: RobustScaler"
+    story = []
+
+
+    # ========================================================
+    # REPORT TITLE
+    # ========================================================
+
+    story.append(
+
+        Paragraph(
+
+            "PulmoVision<br/>"
+            "AI-Powered Lung Cancer Detection System",
+
+            title_style
+
+        )
+
     )
 
 
-    st.write(
-        "Classifier: RBF-SVM"
+    story.append(
+
+        Paragraph(
+
+            "Lung CT Image Analysis Report",
+
+            subtitle_style
+
+        )
+
     )
 
 
-    st.write(
-        f"Modality confidence threshold: "
-        f"{MODALITY_THRESHOLD:.2f}"
+    report_time = (
+        datetime.now().strftime(
+            "%d %B %Y, %I:%M:%S %p"
+        )
     )
+
+
+    story.append(
+
+        Paragraph(
+
+            f"<b>Analysis Date:</b> "
+            f"{report_time}",
+
+            normal_style
+
+        )
+
+    )
+
+
+    story.append(
+        Spacer(1, 10)
+    )
+
+
+    # ========================================================
+    # ORIGINAL IMAGE
+    # ========================================================
+
+    image_buffer = io.BytesIO()
+
+
+    image.save(
+        image_buffer,
+        format="PNG"
+    )
+
+
+    image_buffer.seek(0)
+
+
+    report_image = RLImage(
+
+        image_buffer,
+
+        width=100 * mm,
+
+        height=100 * mm
+
+    )
+
+
+    story.append(
+        report_image
+    )
+
+
+    story.append(
+        Spacer(1, 12)
+    )
+
+
+    # ========================================================
+    # MODALITY SECTION
+    # ========================================================
+
+    story.append(
+
+        Paragraph(
+
+            "1. Medical Image Modality",
+
+            heading_style
+
+        )
+
+    )
+
+
+    modality_data = [
+
+        ["Parameter", "Result"],
+
+        [
+            "Detected Modality",
+            modality
+        ],
+
+        [
+            "Modality Confidence",
+            f"{modality_confidence * 100:.2f}%"
+        ],
+
+        [
+            "Chest X-ray Probability",
+            f"{modality_probabilities[0] * 100:.2f}%"
+        ],
+
+        [
+            "CT Probability",
+            f"{modality_probabilities[1] * 100:.2f}%"
+        ],
+
+        [
+            "MRI Probability",
+            f"{modality_probabilities[2] * 100:.2f}%"
+        ]
+
+    ]
+
+
+    modality_table = Table(
+
+        modality_data,
+
+        colWidths=[
+            75 * mm,
+            75 * mm
+        ]
+
+    )
+
+
+    modality_table.setStyle(
+
+        TableStyle(
+
+            [
+
+                (
+                    "BACKGROUND",
+                    (0, 0),
+                    (-1, 0),
+                    colors.lightgrey
+                ),
+
+                (
+                    "GRID",
+                    (0, 0),
+                    (-1, -1),
+                    0.5,
+                    colors.grey
+                ),
+
+                (
+                    "FONTNAME",
+                    (0, 0),
+                    (-1, 0),
+                    "Helvetica-Bold"
+                ),
+
+                (
+                    "VALIGN",
+                    (0, 0),
+                    (-1, -1),
+                    "MIDDLE"
+                )
+
+            ]
+
+        )
+
+    )
+
+
+    story.append(
+        modality_table
+    )
+
+
+    story.append(
+        Spacer(1, 12)
+    )
+
+
+    # ========================================================
+    # LUNG CANCER RESULT
+    # ========================================================
+
+    story.append(
+
+        Paragraph(
+
+            "2. Lung Cancer Classification",
+
+            heading_style
+
+        )
+
+    )
+
+
+    result_data = [
+
+        ["Parameter", "Result"],
+
+        [
+            "Prediction",
+            predicted_class
+        ],
+
+        [
+            "Prediction Confidence",
+            f"{prediction_confidence * 100:.2f}%"
+        ],
+
+        [
+            "Normal Probability",
+            f"{class_probabilities[0] * 100:.2f}%"
+        ],
+
+        [
+            "Benign Probability",
+            f"{class_probabilities[1] * 100:.2f}%"
+        ],
+
+        [
+            "Malignant Probability",
+            f"{class_probabilities[2] * 100:.2f}%"
+        ]
+
+    ]
+
+
+    result_table = Table(
+
+        result_data,
+
+        colWidths=[
+            75 * mm,
+            75 * mm
+        ]
+
+    )
+
+
+    result_table.setStyle(
+
+        TableStyle(
+
+            [
+
+                (
+                    "BACKGROUND",
+                    (0, 0),
+                    (-1, 0),
+                    colors.lightgrey
+                ),
+
+                (
+                    "GRID",
+                    (0, 0),
+                    (-1, -1),
+                    0.5,
+                    colors.grey
+                ),
+
+                (
+                    "FONTNAME",
+                    (0, 0),
+                    (-1, 0),
+                    "Helvetica-Bold"
+                ),
+
+                (
+                    "VALIGN",
+                    (0, 0),
+                    (-1, -1),
+                    "MIDDLE"
+                )
+
+            ]
+
+        )
+
+    )
+
+
+    story.append(
+        result_table
+    )
+
+
+    story.append(
+        Spacer(1, 12)
+    )
+
+
+    # ========================================================
+    # MODEL PIPELINE
+    # ========================================================
+
+    story.append(
+
+        Paragraph(
+
+            "3. Model Pipeline",
+
+            heading_style
+
+        )
+
+    )
+
+
+    pipeline_text = (
+
+        "CT Modality Verification → "
+        "EfficientNetB0 Block5c → "
+        "GAP + GSDP → "
+        "GSFF Feature Fusion → "
+        "RobustScaler → "
+        "RBF-SVM"
+
+    )
+
+
+    story.append(
+
+        Paragraph(
+
+            pipeline_text,
+
+            normal_style
+
+        )
+
+    )
+
+
+    story.append(
+        Spacer(1, 12)
+    )
+
+
+    # ========================================================
+    # DISCLAIMER
+    # ========================================================
+
+    story.append(
+
+        Paragraph(
+
+            "<b>Disclaimer:</b> "
+            "This system is a research prototype "
+            "developed for educational and research "
+            "purposes. It is not intended to provide "
+            "clinical diagnosis or replace professional "
+            "medical evaluation.",
+
+            normal_style
+
+        )
+
+    )
+
+
+    document.build(
+        story
+    )
+
+
+    buffer.seek(0)
+
+
+    return buffer.getvalue()
 
 
 # ============================================================
-# FILE UPLOADER
+# 31. FILE UPLOADER
 # ============================================================
 
 uploaded_file = st.file_uploader(
@@ -1061,20 +1879,24 @@ uploaded_file = st.file_uploader(
     "📤 Upload Lung CT Image",
 
     type=[
+
         "jpg",
         "jpeg",
         "png",
         "bmp",
         "webp"
+
     ]
+
 )
 
 
 # ============================================================
-# PROCESS UPLOADED IMAGE
+# 32. PROCESS IMAGE
 # ============================================================
 
 if uploaded_file is not None:
+
 
     # ========================================================
     # READ IMAGE
@@ -1103,15 +1925,22 @@ if uploaded_file is not None:
     # DISPLAY IMAGE
     # ========================================================
 
-    st.subheader(
-        "🖼️ Uploaded Image"
+    st.markdown(
+        '<div class="section-title">'
+        '🖼️ Uploaded Image'
+        '</div>',
+        unsafe_allow_html=True
     )
 
 
     st.image(
+
         image,
+
         caption="Uploaded Image",
+
         use_container_width=True
+
     )
 
 
@@ -1132,6 +1961,11 @@ if uploaded_file is not None:
             validation_message
         )
 
+        st.warning(
+            "Please upload a valid grayscale "
+            "lung CT image."
+        )
+
         st.stop()
 
 
@@ -1141,20 +1975,28 @@ if uploaded_file is not None:
 
 
     # ========================================================
-    # DETECTION BUTTON
+    # ANALYSIS BUTTON
     # ========================================================
 
     if st.button(
+
         "🔍 Analyze CT Image",
+
         use_container_width=True
+
     ):
 
+
         # ====================================================
-        # STEP 1 — MODALITY VERIFICATION
+        # STEP 1
+        # MODALITY VERIFICATION
         # ====================================================
 
-        st.subheader(
-            "Step 1 — Image Modality Verification"
+        st.markdown(
+            '<div class="section-title">'
+            'Step 1 — Image Modality Verification'
+            '</div>',
+            unsafe_allow_html=True
         )
 
 
@@ -1168,6 +2010,7 @@ if uploaded_file is not None:
                     modality,
                     modality_confidence,
                     modality_probabilities
+
                 ) = verify_modality(
                     image
                 )
@@ -1175,7 +2018,7 @@ if uploaded_file is not None:
             except Exception as e:
 
                 st.error(
-                    "❌ CT modality verification failed."
+                    "❌ Modality verification failed."
                 )
 
                 st.exception(e)
@@ -1184,71 +2027,129 @@ if uploaded_file is not None:
 
 
         # ====================================================
-        # DISPLAY MODALITY PROBABILITIES
+        # MODALITY RESULT BOX
         # ====================================================
 
-        st.write(
-            "**Modality probabilities:**"
+        st.markdown(
+            '<div class="result-box modality-result">',
+            unsafe_allow_html=True
         )
 
 
         st.write(
-            f"Chest X-ray: "
-            f"{modality_probabilities[0] * 100:.2f}%"
+            f"### Detected Modality: {modality}"
+        )
+
+
+        st.write(
+            f"Confidence: "
+            f"{modality_confidence * 100:.2f}%"
         )
 
 
         st.progress(
             float(
-                modality_probabilities[0]
+                modality_confidence
             )
         )
 
 
-        st.write(
-            f"CT: "
-            f"{modality_probabilities[1] * 100:.2f}%"
-        )
-
-
-        st.progress(
-            float(
-                modality_probabilities[1]
-            )
-        )
-
-
-        st.write(
-            f"MRI: "
-            f"{modality_probabilities[2] * 100:.2f}%"
-        )
-
-
-        st.progress(
-            float(
-                modality_probabilities[2]
-            )
+        st.markdown(
+            "</div>",
+            unsafe_allow_html=True
         )
 
 
         # ====================================================
-        # ACCEPT CT
+        # MODALITY PROBABILITIES
+        # ====================================================
+
+        st.subheader(
+            "📊 Modality Probability Estimates"
+        )
+
+
+        col1, col2, col3 = (
+            st.columns(3)
+        )
+
+
+        with col1:
+
+            st.metric(
+
+                "Chest X-ray",
+
+                f"{modality_probabilities[0] * 100:.2f}%"
+
+            )
+
+            st.progress(
+                float(
+                    modality_probabilities[0]
+                )
+            )
+
+
+        with col2:
+
+            st.metric(
+
+                "CT",
+
+                f"{modality_probabilities[1] * 100:.2f}%"
+
+            )
+
+            st.progress(
+                float(
+                    modality_probabilities[1]
+                )
+            )
+
+
+        with col3:
+
+            st.metric(
+
+                "MRI",
+
+                f"{modality_probabilities[2] * 100:.2f}%"
+
+            )
+
+            st.progress(
+                float(
+                    modality_probabilities[2]
+                )
+            )
+
+
+        # ====================================================
+        # CT ACCEPTANCE
         # ====================================================
 
         if (
+
             modality == "CT"
+
             and
-            modality_confidence >= MODALITY_THRESHOLD
+
+            modality_confidence
+            >= MODALITY_THRESHOLD
+
         ):
 
             st.success(
-                f"✅ CT scan detected "
+
+                f"✅ CT scan verified "
                 f"({modality_confidence * 100:.2f}% confidence)"
+
             )
 
 
         # ====================================================
-        # REJECT X-RAY
+        # X-RAY REJECTION
         # ====================================================
 
         elif modality == "CHEST_XRAY":
@@ -1259,9 +2160,12 @@ if uploaded_file is not None:
 
 
             st.warning(
-                "Lung cancer classification was not "
-                "performed because the analysis pipeline "
-                "is designed for CT images."
+
+                "Lung cancer classification "
+                "was not performed because "
+                "the analysis pipeline is designed "
+                "for CT images."
+
             )
 
 
@@ -1269,7 +2173,7 @@ if uploaded_file is not None:
 
 
         # ====================================================
-        # REJECT MRI
+        # MRI REJECTION
         # ====================================================
 
         elif modality == "MRI":
@@ -1280,9 +2184,12 @@ if uploaded_file is not None:
 
 
             st.warning(
-                "Lung cancer classification was not "
-                "performed because the analysis pipeline "
-                "is designed for CT images."
+
+                "Lung cancer classification "
+                "was not performed because "
+                "the analysis pipeline is designed "
+                "for CT images."
+
             )
 
 
@@ -1296,26 +2203,31 @@ if uploaded_file is not None:
         else:
 
             st.error(
-                "❌ Image modality could not be verified "
+
+                "❌ The image could not be verified "
                 "as a CT scan with sufficient confidence."
+
             )
 
 
             st.write(
+
                 f"Highest predicted modality: "
                 f"{modality}"
+
             )
 
 
             st.write(
+
                 f"Confidence: "
                 f"{modality_confidence * 100:.2f}%"
+
             )
 
 
             st.warning(
-                "Please upload a clear grayscale lung "
-                "CT image."
+                "Please upload a clear lung CT image."
             )
 
 
@@ -1323,24 +2235,32 @@ if uploaded_file is not None:
 
 
         # ====================================================
-        # STEP 2 — LUNG CANCER CLASSIFICATION
+        # STEP 2
+        # LUNG CANCER CLASSIFICATION
         # ====================================================
 
-        st.subheader(
-            "Step 2 — Lung Cancer Classification"
+        st.markdown(
+            '<div class="section-title">'
+            'Step 2 — Lung Cancer Classification'
+            '</div>',
+            unsafe_allow_html=True
         )
 
 
         with st.spinner(
-            "Extracting features and classifying the CT image..."
+
+            "Extracting GSFF features "
+            "and classifying the CT image..."
+
         ):
 
             try:
 
                 (
                     predicted_class,
-                    confidence,
-                    probabilities
+                    prediction_confidence,
+                    class_probabilities
+
                 ) = predict_lung_cancer(
                     image
                 )
@@ -1360,29 +2280,68 @@ if uploaded_file is not None:
         # PREDICTION RESULT
         # ====================================================
 
-        st.subheader(
-            "🎯 Prediction Result"
+        st.markdown(
+            '<div class="section-title">'
+            '🎯 Prediction Result'
+            '</div>',
+            unsafe_allow_html=True
         )
 
 
         if predicted_class == "Normal":
 
-            st.success(
-                f"Prediction: **{predicted_class}**"
+            st.markdown(
+
+                f"""
+                <div class="result-box normal-result">
+                    <h2>🟢 Normal</h2>
+                    <p>
+                    No abnormal lung cancer class
+                    was predicted by the model.
+                    </p>
+                </div>
+                """,
+
+                unsafe_allow_html=True
+
             )
 
 
         elif predicted_class == "Benign":
 
-            st.warning(
-                f"Prediction: **{predicted_class}**"
+            st.markdown(
+
+                f"""
+                <div class="result-box benign-result">
+                    <h2>🟡 Benign</h2>
+                    <p>
+                    The model classified the CT image
+                    as Benign.
+                    </p>
+                </div>
+                """,
+
+                unsafe_allow_html=True
+
             )
 
 
         else:
 
-            st.error(
-                f"Prediction: **{predicted_class}**"
+            st.markdown(
+
+                f"""
+                <div class="result-box malignant-result">
+                    <h2>🔴 Malignant</h2>
+                    <p>
+                    The model classified the CT image
+                    as Malignant.
+                    </p>
+                </div>
+                """,
+
+                unsafe_allow_html=True
+
             )
 
 
@@ -1390,16 +2349,26 @@ if uploaded_file is not None:
         # CONFIDENCE
         # ====================================================
 
+        st.subheader(
+            "Prediction Confidence"
+        )
+
+
         st.metric(
-            "Prediction Confidence",
-            f"{confidence * 100:.2f}%"
+
+            "Confidence",
+
+            f"{prediction_confidence * 100:.2f}%"
+
         )
 
 
         st.progress(
+
             float(
-                confidence
+                prediction_confidence
             )
+
         )
 
 
@@ -1412,28 +2381,70 @@ if uploaded_file is not None:
         )
 
 
-        for i, class_name in enumerate(
-            class_names
-        ):
+        probability_col1, probability_col2, probability_col3 = (
+            st.columns(3)
+        )
 
-            probability = float(
-                probabilities[i]
+
+        with probability_col1:
+
+            st.metric(
+
+                "Normal",
+
+                f"{class_probabilities[0] * 100:.2f}%"
+
             )
-
-
-            st.write(
-                f"**{class_name}: "
-                f"{probability * 100:.2f}%**"
-            )
-
 
             st.progress(
-                probability
+
+                float(
+                    class_probabilities[0]
+                )
+
+            )
+
+
+        with probability_col2:
+
+            st.metric(
+
+                "Benign",
+
+                f"{class_probabilities[1] * 100:.2f}%"
+
+            )
+
+            st.progress(
+
+                float(
+                    class_probabilities[1]
+                )
+
+            )
+
+
+        with probability_col3:
+
+            st.metric(
+
+                "Malignant",
+
+                f"{class_probabilities[2] * 100:.2f}%"
+
+            )
+
+            st.progress(
+
+                float(
+                    class_probabilities[2]
+                )
+
             )
 
 
         # ====================================================
-        # MODEL PIPELINE INFORMATION
+        # TECHNICAL DETAILS
         # ====================================================
 
         with st.expander(
@@ -1446,8 +2457,10 @@ if uploaded_file is not None:
 
 
             st.write(
+
                 f"CT verification confidence: "
                 f"{modality_confidence * 100:.2f}%"
+
             )
 
 
@@ -1487,30 +2500,114 @@ if uploaded_file is not None:
 
 
         # ====================================================
+        # PDF REPORT
+        # ====================================================
+
+        st.subheader(
+            "📄 Analysis Report"
+        )
+
+
+        try:
+
+            pdf_bytes = create_pdf_report(
+
+                image=image,
+
+                modality=modality,
+
+                modality_confidence=(
+                    modality_confidence
+                ),
+
+                modality_probabilities=(
+                    modality_probabilities
+                ),
+
+                predicted_class=(
+                    predicted_class
+                ),
+
+                prediction_confidence=(
+                    prediction_confidence
+                ),
+
+                class_probabilities=(
+                    class_probabilities
+                )
+
+            )
+
+
+            st.download_button(
+
+                label="📥 Download PDF Report",
+
+                data=pdf_bytes,
+
+                file_name=(
+                    "PulmoVision_Lung_Cancer_Report.pdf"
+                ),
+
+                mime="application/pdf",
+
+                use_container_width=True
+
+            )
+
+
+        except Exception as e:
+
+            st.warning(
+                "PDF report could not be generated."
+            )
+
+            st.exception(e)
+
+
+        # ====================================================
         # MEDICAL DISCLAIMER
         # ====================================================
 
         st.info(
+
             "⚠️ This system is a research prototype "
-            "for educational and research purposes. "
-            "It is not intended to provide clinical "
-            "diagnosis or replace professional medical "
-            "evaluation."
+            "developed for educational and research "
+            "purposes. It is not intended to provide "
+            "clinical diagnosis or replace professional "
+            "medical evaluation."
+
         )
 
 
 # ============================================================
-# FOOTER
+# 33. FOOTER
 # ============================================================
 
 st.divider()
 
 
-st.caption(
-    "🫁 PulmoVision — AI-Powered Lung Cancer Detection System"
-)
+st.markdown(
 
+    """
+    <div style="
+        text-align:center;
+        font-size:14px;
+        line-height:1.7;
+    ">
 
-st.caption(
-    "Research Prototype • EfficientNetB0 • GSFF • RBF-SVM"
+    🫁 <b>PulmoVision</b><br>
+
+    AI-Powered Lung Cancer Detection System<br>
+
+    <small>
+    EfficientNetB0 • GAP + GSDP • GSFF •
+    RobustScaler • RBF-SVM
+    </small>
+
+    </div>
+    """,
+
+    unsafe_allow_html=True
+
 )
