@@ -2459,10 +2459,7 @@ if (
             )
 
 
-            st.warning(
-                "Please upload a valid grayscale "
-                "lung CT image."
-            )
+           
 
 
             st.stop()
