@@ -140,7 +140,7 @@ MODALITY_THRESHOLD = 0.60
 
 # Average channel difference above this value
 # indicates a genuine colour image.
-COLOR_TOLERANCE = 3.0
+COLOR_TOLERANCE = 8.0
 
 
 # ============================================================
@@ -243,7 +243,7 @@ def validate_model_file(
     if not path.exists():
 
         st.error(
-            f"❌ {model_name} was not found."
+            f"{model_name} was not found."
         )
 
         st.code(
@@ -256,7 +256,7 @@ def validate_model_file(
     if path.stat().st_size == 0:
 
         st.error(
-            f"❌ {model_name} file is empty."
+            f"{model_name} file is empty."
         )
 
         st.stop()
@@ -382,7 +382,7 @@ try:
 except Exception as e:
 
     st.error(
-        "❌ CT verifier loading failed."
+        "CT verifier loading failed."
     )
 
     st.exception(e)
@@ -399,7 +399,7 @@ try:
 except Exception as e:
 
     st.error(
-        "❌ GSFF feature extractor loading failed."
+        "GSFF feature extractor loading failed."
     )
 
     st.error(
@@ -420,7 +420,7 @@ try:
 except Exception as e:
 
     st.error(
-        "❌ RobustScaler loading failed."
+        "RobustScaler loading failed."
     )
 
     st.exception(e)
@@ -435,7 +435,7 @@ try:
 except Exception as e:
 
     st.error(
-        "❌ SVM classifier loading failed."
+        "SVM classifier loading failed."
     )
 
     st.exception(e)
@@ -457,7 +457,7 @@ try:
     if ct_output_shape[-1] != 3:
 
         st.error(
-            "❌ CT verifier output mismatch."
+            "CT verifier output mismatch."
         )
 
         st.write(
@@ -474,7 +474,7 @@ try:
 except Exception as e:
 
     st.error(
-        "❌ Unable to verify CT verifier output."
+        "Unable to verify CT verifier output."
     )
 
     st.exception(e)
@@ -502,7 +502,7 @@ try:
     ):
 
         st.error(
-            "❌ GSFF feature dimension mismatch."
+            "GSFF feature dimension mismatch."
         )
 
         st.write(
@@ -521,7 +521,7 @@ try:
 except Exception as e:
 
     st.error(
-        "❌ Unable to verify GSFF feature dimension."
+        "Unable to verify GSFF feature dimension."
     )
 
     st.exception(e)
@@ -812,290 +812,145 @@ with st.sidebar:
 
 
 # ============================================================
-# 22. MODEL INFORMATION
+# 22. COLOUR IMAGE CHECK
 # ============================================================
 
-with st.expander(
-    "⚙️ Model Information"
-):
-
-    st.write(
-        f"CT verifier: "
-        f"{CT_VERIFIER_PATH.name}"
-    )
-
-
-    st.write(
-        f"GSFF extractor: "
-        f"{FEATURE_EXTRACTOR_PATH.name}"
-    )
-
-
-    st.write(
-        "Modality classifier: "
-        "MobileNetV2"
-    )
-
-
-    st.write(
-        "Modality input: "
-        "128 × 128 × 3"
-    )
-
-
-    st.write(
-        "Feature extractor: "
-        "EfficientNetB0"
-    )
-
-
-    st.write(
-        "Truncation: Block5c"
-    )
-
-
-    st.write(
-        "Feature fusion: GAP + GSDP"
-    )
-
-
-    st.write(
-        "Feature dimension: 224"
-    )
-
-
-    st.write(
-        "Scaler: RobustScaler"
-    )
-
-
-    st.write(
-        "Classifier: RBF-SVM"
-    )
-
-
-    st.write(
-        f"CT confidence threshold: "
-        f"{MODALITY_THRESHOLD:.2f}"
-    )
-
-
-# ============================================================
-# 23. IMAGE COLOUR DETECTION
-# ============================================================
-
-def check_grayscale_image(
+def check_color_image(
     image
 ):
 
-    """
-    Determines whether the uploaded image
-    is effectively grayscale.
+    rgb = np.asarray(
+        image.convert("RGB"),
+        dtype=np.float32
+    )
 
-    A grayscale CT image can be stored as RGB.
-    If RGB channels are almost identical,
-    it is treated as grayscale.
-    """
+    red = rgb[:, :, 0]
 
-    try:
+    green = rgb[:, :, 1]
 
-        rgb_image = (
-            image.convert("RGB")
+    blue = rgb[:, :, 2]
+
+    rg_difference = np.mean(
+        np.abs(
+            red - green
         )
+    )
 
-
-        rgb_array = np.asarray(
-            rgb_image,
-            dtype=np.float32
+    gb_difference = np.mean(
+        np.abs(
+            green - blue
         )
+    )
 
-
-        r = rgb_array[:, :, 0]
-
-        g = rgb_array[:, :, 1]
-
-        b = rgb_array[:, :, 2]
-
-
-        rg_difference = np.mean(
-            np.abs(r - g)
+    rb_difference = np.mean(
+        np.abs(
+            red - blue
         )
+    )
 
+    average_difference = (
+        rg_difference
+        +
+        gb_difference
+        +
+        rb_difference
+    ) / 3.0
 
-        gb_difference = np.mean(
-            np.abs(g - b)
-        )
+    is_color = (
+        average_difference
+        >
+        COLOR_TOLERANCE
+    )
 
-
-        rb_difference = np.mean(
-            np.abs(r - b)
-        )
-
-
-        average_difference = (
-
-            rg_difference
-            +
-            gb_difference
-            +
-            rb_difference
-
-        ) / 3.0
-
-
-        if (
-            average_difference
-            > COLOR_TOLERANCE
-        ):
-
-            return (
-                False,
-                "❌ Colour image detected."
-            )
-
-
-        return (
-            True,
-            "✅ Grayscale image detected."
-        )
-
-
-    except Exception as e:
-
-        return (
-            False,
-            f"❌ Image colour validation failed: {e}"
-        )
+    return (
+        is_color,
+        float(average_difference)
+    )
 
 
 # ============================================================
-# 24. BASIC IMAGE VALIDATION
+# 23. BASIC IMAGE VALIDATION
 # ============================================================
 
 def validate_image(
     image
 ):
 
-    width, height = (
-        image.size
-    )
+    width, height = image.size
 
-
-    # --------------------------------------------------------
-    # Resolution
-    # --------------------------------------------------------
-
-    if (
-        width < 64
-        or
-        height < 64
-    ):
+    if width < 64 or height < 64:
 
         return (
             False,
-            "❌ Image resolution is too small."
+            "Image resolution is too small."
         )
 
+    array = np.asarray(
+        image
+    )
 
-    # --------------------------------------------------------
-    # Colour validation
-    # --------------------------------------------------------
+    if array.size == 0:
 
-    is_grayscale, message = (
-        check_grayscale_image(
+        return (
+            False,
+            "Image is empty."
+        )
+
+    is_color, difference = (
+        check_color_image(
             image
         )
     )
 
-
-    if not is_grayscale:
+    if is_color:
 
         return (
             False,
-            message
+            "Color image detected. Please input a lung CT image."
         )
 
-
-    # --------------------------------------------------------
-    # Grayscale statistics
-    # --------------------------------------------------------
-
-    gray = image.convert("L")
-
-
-    gray_array = np.asarray(
-        gray,
+    gray = np.asarray(
+        image.convert("L"),
         dtype=np.float32
     )
 
-
-    # --------------------------------------------------------
-    # Blank image
-    # --------------------------------------------------------
-
-    standard_deviation = (
-        np.std(
-            gray_array
-        )
-    )
-
-
-    if (
-        standard_deviation < 8
-    ):
+    if np.std(gray) < 8:
 
         return (
             False,
-            "❌ Image appears blank or invalid."
+            "Image appears blank or invalid."
         )
-
-
-    # --------------------------------------------------------
-    # Almost black
-    # --------------------------------------------------------
 
     dark_ratio = np.mean(
-        gray_array < 10
+        gray < 10
     )
 
-
-    if (
-        dark_ratio > 0.98
-    ):
+    if dark_ratio > 0.98:
 
         return (
             False,
-            "❌ Image is almost completely black."
+            "Image is almost completely black."
         )
-
-
-    # --------------------------------------------------------
-    # Almost white
-    # --------------------------------------------------------
 
     bright_ratio = np.mean(
-        gray_array > 245
+        gray > 245
     )
 
-
-    if (
-        bright_ratio > 0.98
-    ):
+    if bright_ratio > 0.98:
 
         return (
             False,
-            "❌ Image is almost completely white."
+            "Image is almost completely white."
         )
-
 
     return (
         True,
-        "✅ Image passed basic validation."
+        "Image passed validation."
     )
 
 
 # ============================================================
-# 25. PREPROCESS CT VERIFIER
+# 24. PREPROCESS CT VERIFIER
 # ============================================================
 
 def preprocess_for_ct_verifier(
@@ -1135,7 +990,7 @@ def preprocess_for_ct_verifier(
 
 
 # ============================================================
-# 26. PREPROCESS FOR GSFF
+# 25. PREPROCESS FOR GSFF
 # ============================================================
 
 def preprocess_for_gsff(
@@ -1180,7 +1035,7 @@ def preprocess_for_gsff(
 
 
 # ============================================================
-# 27. MODALITY VERIFICATION
+# 26. MODALITY VERIFICATION
 # ============================================================
 
 def verify_modality(
@@ -1255,7 +1110,7 @@ def verify_modality(
 
 
 # ============================================================
-# 28. GSFF FEATURE EXTRACTION
+# 27. GSFF FEATURE EXTRACTION
 # ============================================================
 
 def extract_gsff_features(
@@ -1287,7 +1142,7 @@ def extract_gsff_features(
 
 
 # ============================================================
-# 29. LUNG CANCER PREDICTION
+# 28. LUNG CANCER PREDICTION
 # ============================================================
 
 def predict_lung_cancer(
@@ -1365,7 +1220,7 @@ def predict_lung_cancer(
 
 
 # ============================================================
-# 30. PDF REPORT
+# 29. PDF REPORT
 # ============================================================
 
 def create_pdf_report(
@@ -1871,7 +1726,7 @@ def create_pdf_report(
 
 
 # ============================================================
-# 31. FILE UPLOADER
+# 30. FILE UPLOADER
 # ============================================================
 
 uploaded_file = st.file_uploader(
@@ -1892,7 +1747,7 @@ uploaded_file = st.file_uploader(
 
 
 # ============================================================
-# 32. PROCESS IMAGE
+# 31. PROCESS IMAGE
 # ============================================================
 
 if uploaded_file is not None:
@@ -1913,7 +1768,7 @@ if uploaded_file is not None:
     except Exception as e:
 
         st.error(
-            "❌ Unable to read the uploaded image."
+            "Unable to read the uploaded image."
         )
 
         st.exception(e)
@@ -2018,7 +1873,7 @@ if uploaded_file is not None:
             except Exception as e:
 
                 st.error(
-                    "❌ Modality verification failed."
+                    "Modality verification failed."
                 )
 
                 st.exception(e)
@@ -2155,7 +2010,7 @@ if uploaded_file is not None:
         elif modality == "CHEST_XRAY":
 
             st.error(
-                "❌ Chest X-ray detected."
+                "Chest X-ray detected."
             )
 
 
@@ -2179,7 +2034,7 @@ if uploaded_file is not None:
         elif modality == "MRI":
 
             st.error(
-                "❌ MRI image detected."
+                "MRI image detected."
             )
 
 
@@ -2204,7 +2059,7 @@ if uploaded_file is not None:
 
             st.error(
 
-                "❌ The image could not be verified "
+                "The image could not be verified "
                 "as a CT scan with sufficient confidence."
 
             )
@@ -2268,7 +2123,7 @@ if uploaded_file is not None:
             except Exception as e:
 
                 st.error(
-                    "❌ Lung cancer prediction failed."
+                    "Lung cancer prediction failed."
                 )
 
                 st.exception(e)
@@ -2444,62 +2299,6 @@ if uploaded_file is not None:
 
 
         # ====================================================
-        # TECHNICAL DETAILS
-        # ====================================================
-
-        with st.expander(
-            "🔧 Technical Prediction Details"
-        ):
-
-            st.write(
-                "Verified modality: CT"
-            )
-
-
-            st.write(
-
-                f"CT verification confidence: "
-                f"{modality_confidence * 100:.2f}%"
-
-            )
-
-
-            st.write(
-                "Feature extractor: EfficientNetB0"
-            )
-
-
-            st.write(
-                "Truncation: Block5c"
-            )
-
-
-            st.write(
-                "Pooling: GAP + GSDP"
-            )
-
-
-            st.write(
-                "Fusion: GSFF"
-            )
-
-
-            st.write(
-                "Feature dimension: 224"
-            )
-
-
-            st.write(
-                "Feature scaling: RobustScaler"
-            )
-
-
-            st.write(
-                "Classifier: RBF-SVM"
-            )
-
-
-        # ====================================================
         # PDF REPORT
         # ====================================================
 
@@ -2581,7 +2380,7 @@ if uploaded_file is not None:
 
 
 # ============================================================
-# 33. FOOTER
+# 32. FOOTER
 # ============================================================
 
 st.divider()
