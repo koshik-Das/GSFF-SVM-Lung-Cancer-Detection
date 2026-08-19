@@ -1481,13 +1481,13 @@ def create_pdf_report(
 
         pagesize=A4,
 
-        rightMargin=18 * mm,
+        rightMargin=14 * mm,
 
-        leftMargin=18 * mm,
+        leftMargin=14 * mm,
 
-        topMargin=18 * mm,
+        topMargin=12 * mm,
 
-        bottomMargin=18 * mm,
+        bottomMargin=12 * mm,
     )
 
 
@@ -1500,63 +1500,23 @@ def create_pdf_report(
     )
 
 
-    title_style = ParagraphStyle(
-
-        "ReportTitle",
-
-        parent=styles["Title"],
-
-        alignment=TA_CENTER,
-
-        fontSize=18,
-
-        leading=22,
-
-        spaceAfter=12,
-    )
-
-
-    subtitle_style = ParagraphStyle(
-
-        "ReportSubtitle",
-
-        parent=styles["Normal"],
-
-        alignment=TA_CENTER,
-
-        fontSize=11,
-
-        leading=14,
-
-        spaceAfter=15,
-    )
-
-
     heading_style = ParagraphStyle(
 
         "ReportHeading",
 
-        parent=styles["Heading2"],
+        parent=styles["Normal"],
+
+        fontName="Helvetica-Bold",
 
         fontSize=13,
 
         leading=16,
 
-        spaceBefore=10,
+        spaceBefore=0,
 
         spaceAfter=8,
-    )
 
-
-    normal_style = ParagraphStyle(
-
-        "ReportNormal",
-
-        parent=styles["Normal"],
-
-        fontSize=10,
-
-        leading=14,
+        textColor=colors.black,
     )
 
 
@@ -1564,116 +1524,7 @@ def create_pdf_report(
 
 
     # ========================================================
-    # REPORT TITLE
-    # ========================================================
-
-    story.append(
-
-        Paragraph(
-
-            "PulmoVision<br/>"
-            "AI-Powered Lung Cancer Detection System",
-
-            title_style,
-        )
-    )
-
-
-    # ========================================================
-    # REPORT SUBTITLE
-    # ========================================================
-
-    story.append(
-
-        Paragraph(
-
-            "Lung CT Image Analysis Report",
-
-            subtitle_style,
-        )
-    )
-
-
-    # ========================================================
-    # ANALYSIS DATE
-    # ========================================================
-
-    report_time = (
-        datetime.now().strftime(
-            "%d %B %Y, %I:%M:%S %p"
-        )
-    )
-
-
-    story.append(
-
-        Paragraph(
-
-            f"<b>Analysis Date:</b> "
-            f"{report_time}",
-
-            normal_style,
-        )
-    )
-
-
-    story.append(
-        Spacer(
-            1,
-            10
-        )
-    )
-
-
-    # ========================================================
-    # ORIGINAL IMAGE
-    # ========================================================
-
-    image_buffer = (
-        io.BytesIO()
-    )
-
-
-    image.convert(
-        "RGB"
-    ).save(
-
-        image_buffer,
-
-        format="PNG"
-    )
-
-
-    image_buffer.seek(
-        0
-    )
-
-
-    report_image = RLImage(
-
-        image_buffer,
-
-        width=100 * mm,
-
-        height=100 * mm,
-    )
-
-
-    story.append(
-        report_image
-    )
-
-
-    story.append(
-        Spacer(
-            1,
-            12
-        )
-    )
-
-
-    # ========================================================
-    # MODALITY SECTION
+    # MEDICAL IMAGE MODALITY
     # ========================================================
 
     story.append(
@@ -1730,9 +1581,11 @@ def create_pdf_report(
         modality_data,
 
         colWidths=[
-            75 * mm,
-            75 * mm
+            84 * mm,
+            84 * mm
         ],
+
+        hAlign="CENTER",
     )
 
 
@@ -1765,10 +1618,59 @@ def create_pdf_report(
                 ),
 
                 (
+                    "FONTNAME",
+                    (0, 1),
+                    (-1, -1),
+                    "Helvetica"
+                ),
+
+                (
+                    "FONTSIZE",
+                    (0, 0),
+                    (-1, -1),
+                    10
+                ),
+
+                (
+                    "ALIGN",
+                    (0, 0),
+                    (-1, -1),
+                    "LEFT"
+                ),
+
+                (
                     "VALIGN",
                     (0, 0),
                     (-1, -1),
                     "MIDDLE"
+                ),
+
+                (
+                    "LEFTPADDING",
+                    (0, 0),
+                    (-1, -1),
+                    7
+                ),
+
+                (
+                    "RIGHTPADDING",
+                    (0, 0),
+                    (-1, -1),
+                    7
+                ),
+
+                (
+                    "TOPPADDING",
+                    (0, 0),
+                    (-1, -1),
+                    4
+                ),
+
+                (
+                    "BOTTOMPADDING",
+                    (0, 0),
+                    (-1, -1),
+                    4
                 ),
             ]
         )
@@ -1783,7 +1685,7 @@ def create_pdf_report(
     story.append(
         Spacer(
             1,
-            12
+            16
         )
     )
 
@@ -1846,9 +1748,11 @@ def create_pdf_report(
         result_data,
 
         colWidths=[
-            75 * mm,
-            75 * mm
+            84 * mm,
+            84 * mm
         ],
+
+        hAlign="CENTER",
     )
 
 
@@ -1881,10 +1785,59 @@ def create_pdf_report(
                 ),
 
                 (
+                    "FONTNAME",
+                    (0, 1),
+                    (-1, -1),
+                    "Helvetica"
+                ),
+
+                (
+                    "FONTSIZE",
+                    (0, 0),
+                    (-1, -1),
+                    10
+                ),
+
+                (
+                    "ALIGN",
+                    (0, 0),
+                    (-1, -1),
+                    "LEFT"
+                ),
+
+                (
                     "VALIGN",
                     (0, 0),
                     (-1, -1),
                     "MIDDLE"
+                ),
+
+                (
+                    "LEFTPADDING",
+                    (0, 0),
+                    (-1, -1),
+                    7
+                ),
+
+                (
+                    "RIGHTPADDING",
+                    (0, 0),
+                    (-1, -1),
+                    7
+                ),
+
+                (
+                    "TOPPADDING",
+                    (0, 0),
+                    (-1, -1),
+                    4
+                ),
+
+                (
+                    "BOTTOMPADDING",
+                    (0, 0),
+                    (-1, -1),
+                    4
                 ),
             ]
         )
@@ -1893,85 +1846,6 @@ def create_pdf_report(
 
     story.append(
         result_table
-    )
-
-
-    story.append(
-        Spacer(
-            1,
-            12
-        )
-    )
-
-
-    # ========================================================
-    # MODEL PIPELINE
-    # ========================================================
-
-    story.append(
-
-        Paragraph(
-
-            "3. Model Pipeline",
-
-            heading_style,
-        )
-    )
-
-
-    pipeline_text = (
-
-        "CT Modality Verification → "
-
-        "EfficientNetB0 Block5c → "
-
-        "GAP + GSDP → "
-
-        "GSFF Feature Fusion → "
-
-        "RobustScaler → "
-
-        "RBF-SVM"
-    )
-
-
-    story.append(
-
-        Paragraph(
-
-            pipeline_text,
-
-            normal_style,
-        )
-    )
-
-
-    story.append(
-        Spacer(
-            1,
-            12
-        )
-    )
-
-
-    # ========================================================
-    # DISCLAIMER
-    # ========================================================
-
-    story.append(
-
-        Paragraph(
-
-            "<b>Disclaimer:</b> "
-
-            "This system is a research prototype "
-            "developed for educational and research "
-            "purposes. It is not intended to provide "
-            "clinical diagnosis or replace professional "
-            "medical evaluation.",
-
-            normal_style,
-        )
     )
 
 
