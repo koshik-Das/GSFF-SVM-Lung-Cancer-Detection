@@ -1,35 +1,7 @@
 # ============================================================
-# app.py
-# PulmoVision
+# app.py — PulmoVision
 # AI-Powered Lung Cancer Detection System
-#
-# PIPELINE
-#
-# Uploaded Image
-#       ↓
-# Basic Image Validation
-#       ↓
-# Colour Image Detection
-#       ↓
-# CT / Chest X-ray / MRI Modality Classification
-#       ↓
-# CT Verification
-#       ↓
-# EfficientNetB0
-#       ↓
-# Block5c
-#       ↓
-# GAP + GSDP
-#       ↓
-# GSFF Feature Fusion
-#       ↓
-# RobustScaler
-#       ↓
-# RBF-SVM
-#       ↓
-# Normal / Benign / Malignant
-#
-
+# ============================================================
 
 # ============================================================
 # 1. IMPORTS
@@ -44,9 +16,9 @@ import joblib
 import keras
 import numpy as np
 import streamlit as st
+import tensorflow as tf
 
 from PIL import Image
-
 from tensorflow.keras.applications.efficientnet import preprocess_input
 
 from reportlab.lib import colors
@@ -63,7 +35,6 @@ from reportlab.platypus import (
     Image as RLImage,
 )
 
-
 # ============================================================
 # STREAMLIT CONFIGURATION
 # ============================================================
@@ -74,78 +45,30 @@ st.set_page_config(
     layout="wide",
 )
 
-
 # ============================================================
-# BASE DIRECTORY
+# BASE DIRECTORY AND MODEL PATHS
 # ============================================================
 
 BASE_DIR = Path(__file__).resolve().parent
 
-
-# ============================================================
-# HEADER IMAGE
-# ============================================================
-
 LUNG_ICON_PATH = BASE_DIR / "Lung_Icon.png"
 
-
-# ============================================================
-# MODEL FILE PATHS
-# ============================================================
-
 CT_VERIFIER_PATH = BASE_DIR / "CT_Verifier.keras"
-
-FEATURE_EXTRACTOR_PATH = (
-    BASE_DIR / "GSFF_Feature_Extractor.keras"
-)
-
+FEATURE_EXTRACTOR_PATH = BASE_DIR / "GSFF_Feature_Extractor.keras"
 SCALER_PATH = BASE_DIR / "RobustScaler.pkl"
-
 SVM_PATH = BASE_DIR / "SVM_Classifier.pkl"
-
 
 # ============================================================
 # IMAGE SETTINGS
 # ============================================================
 
-CT_VERIFIER_IMAGE_SIZE = (
-    128,
-    128,
-)
-
-FEATURE_EXTRACTOR_IMAGE_SIZE = (
-    224,
-    224,
-)
-
-
-# ============================================================
-# THRESHOLDS
-# ============================================================
+CT_VERIFIER_IMAGE_SIZE = (128, 128)
+FEATURE_EXTRACTOR_IMAGE_SIZE = (224, 224)
 
 MODALITY_THRESHOLD = 0.60
-
 COLOR_TOLERANCE = 8.0
 
-
-# ============================================================
-# CLASS MAPPINGS
-# ============================================================
-
-class_names = [
-    "Normal",
-    "Benign",
-    "Malignant",
-]
-
-
-# ============================================================
-# MODALITY CLASS MAPPING
-#
-# 0 = CHEST_XRAY
-# 1 = CT
-# 2 = MRI
-# ============================================================
+class_names = ["Normal", "Benign", "Malignant"]
 
 modality_names = [
     "CHEST_XRAY",
@@ -153,36 +76,38 @@ modality_names = [
     "MRI",
 ]
 
-
 # ============================================================
-# CUSTOM GSDP LAYER
+# CUSTOM GSDP LAYER — FIXED
+#
+# Must match the custom layer used when the model was saved.
+# Register this class BEFORE loading the feature extractor.
 # ============================================================
 
 @keras.saving.register_keras_serializable(
-    package="GSFF"
+    package="PulmoVision"
 )
-class GSDP(keras.layers.Layer):
+class SpatialStdPooling(keras.layers.Layer):
 
-    def __init__(
-        self,
-        **kwargs
-    ):
-        super().__init__(
-            **kwargs
-        )
-
-    def call(
-        self,
-        inputs
-    ):
-        return keras.ops.std(
+    def call(self, inputs):
+        mean = tf.reduce_mean(
             inputs,
-            axis=(1, 2)
+            axis=[1, 2],
+            keepdims=True,
         )
 
-    def get_config(
-        self
-    ):
+        variance = tf.reduce_mean(
+            tf.square(inputs - mean),
+            axis=[1, 2],
+        )
+
+        return tf.sqrt(
+            tf.maximum(variance, 0.0)
+        )
+
+    def compute_output_shape(self, input_shape):
+        return (input_shape[0], input_shape[-1])
+
+    def get_config(self):
         return super().get_config()
 
 
@@ -190,60 +115,27 @@ class GSDP(keras.layers.Layer):
 # MODEL FILE VALIDATION
 # ============================================================
 
-def validate_model_file(
-    path,
-    model_name
-):
+def validate_model_file(path, model_name):
 
     if not path.exists():
-
-        st.error(
-            f"{model_name} was not found."
-        )
-
-        st.code(
-            str(path)
-        )
-
+        st.error(f"{model_name} was not found.")
+        st.code(str(path))
         st.stop()
 
     if path.stat().st_size == 0:
-
-        st.error(
-            f"{model_name} file is empty."
-        )
-
+        st.error(f"{model_name} file is empty.")
         st.stop()
 
 
-# ============================================================
-# REQUIRED FILES
-# ============================================================
-
 required_files = {
-
-    "CT Verifier":
-        CT_VERIFIER_PATH,
-
-    "GSFF Feature Extractor":
-        FEATURE_EXTRACTOR_PATH,
-
-    "RobustScaler":
-        SCALER_PATH,
-
-    "SVM Classifier":
-        SVM_PATH,
+    "CT Verifier": CT_VERIFIER_PATH,
+    "GSFF Feature Extractor": FEATURE_EXTRACTOR_PATH,
+    "RobustScaler": SCALER_PATH,
+    "SVM Classifier": SVM_PATH,
 }
 
-
-for model_name, model_path in (
-    required_files.items()
-):
-
-    validate_model_file(
-        model_path,
-        model_name
-    )
+for model_name, model_path in required_files.items():
+    validate_model_file(model_path, model_name)
 
 
 # ============================================================
@@ -253,39 +145,27 @@ for model_name, model_path in (
 @st.cache_resource
 def load_ct_verifier():
 
-    model = keras.models.load_model(
-
+    return keras.models.load_model(
         CT_VERIFIER_PATH,
-
         compile=False,
     )
 
-    return model
-
 
 # ============================================================
-# LOAD GSFF FEATURE EXTRACTOR
+# LOAD GSFF FEATURE EXTRACTOR — FIXED
 # ============================================================
 
 @st.cache_resource
 def load_feature_extractor():
 
     model = keras.models.load_model(
-
         FEATURE_EXTRACTOR_PATH,
-
         custom_objects={
-
-            "GSDP":
-                GSDP,
-
-            "GSFF>GSDP":
-                GSDP,
+            "SpatialStdPooling": SpatialStdPooling,
+            "PulmoVision>SpatialStdPooling": SpatialStdPooling,
         },
-
         compile=False,
-
-        safe_mode=False,
+        safe_mode=True,
     )
 
     return model
@@ -297,10 +177,7 @@ def load_feature_extractor():
 
 @st.cache_resource
 def load_scaler():
-
-    return joblib.load(
-        SCALER_PATH
-    )
+    return joblib.load(SCALER_PATH)
 
 
 # ============================================================
@@ -309,10 +186,7 @@ def load_scaler():
 
 @st.cache_resource
 def load_svm():
-
-    return joblib.load(
-        SVM_PATH
-    )
+    return joblib.load(SVM_PATH)
 
 
 # ============================================================
@@ -320,175 +194,81 @@ def load_svm():
 # ============================================================
 
 try:
-
-    ct_verifier = (
-        load_ct_verifier()
-    )
-
+    ct_verifier = load_ct_verifier()
 except Exception as e:
-
-    st.error(
-        "CT verifier loading failed."
-    )
-
-    st.exception(
-        e
-    )
-
+    st.error("CT verifier loading failed.")
+    st.exception(e)
     st.stop()
 
-
 try:
-
-    feature_extractor = (
-        load_feature_extractor()
-    )
-
+    feature_extractor = load_feature_extractor()
 except Exception as e:
-
+    st.error("GSFF feature extractor loading failed.")
     st.error(
-        "GSFF feature extractor loading failed."
+        "Check that GSFF_Feature_Extractor.keras was saved "
+        "using the SpatialStdPooling implementation defined "
+        "in this app and that the uploaded model is valid."
     )
-
-    st.error(
-        "Make sure GSFF_Feature_Extractor.keras "
-        "is the same model created during training."
-    )
-
-    st.exception(
-        e
-    )
-
+    st.exception(e)
     st.stop()
 
-
 try:
-
-    scaler = (
-        load_scaler()
-    )
-
+    scaler = load_scaler()
 except Exception as e:
-
-    st.error(
-        "RobustScaler loading failed."
-    )
-
-    st.exception(
-        e
-    )
-
+    st.error("RobustScaler loading failed.")
+    st.exception(e)
     st.stop()
 
-
 try:
-
-    svm = (
-        load_svm()
-    )
-
+    svm = load_svm()
 except Exception as e:
-
-    st.error(
-        "SVM classifier loading failed."
-    )
-
-    st.exception(
-        e
-    )
-
+    st.error("SVM classifier loading failed.")
+    st.exception(e)
     st.stop()
 
 
 # ============================================================
-# VERIFY CT VERIFIER OUTPUT
+# VERIFY MODEL OUTPUTS
 # ============================================================
 
 try:
+    ct_output_shape = ct_verifier.output_shape
 
-    ct_output_shape = (
-        ct_verifier.output_shape
-    )
-
-    if (
-        ct_output_shape[-1]
-        !=
-        3
-    ):
-
-        st.error(
-            "CT verifier output mismatch."
-        )
-
-        st.write(
-            "Expected: 3 classes"
-        )
-
-        st.write(
-            f"Actual: {ct_output_shape}"
-        )
-
+    if ct_output_shape[-1] != 3:
+        st.error("CT verifier output mismatch.")
+        st.write("Expected: 3 classes")
+        st.write(f"Actual: {ct_output_shape}")
         st.stop()
 
 except Exception as e:
-
-    st.error(
-        "Unable to verify CT verifier output."
-    )
-
-    st.exception(
-        e
-    )
-
+    st.error("Unable to verify CT verifier output.")
+    st.exception(e)
     st.stop()
 
 
-# ============================================================
-# VERIFY GSFF FEATURE DIMENSION
-# ============================================================
-
 try:
+    feature_output_shape = feature_extractor.output_shape
+    expected_feature_dimension = 224
 
-    feature_output_shape = (
-        feature_extractor.output_shape
-    )
+    if feature_output_shape[-1] != expected_feature_dimension:
+        st.error("GSFF feature dimension mismatch.")
+        st.write(f"Expected: {expected_feature_dimension}")
+        st.write(f"Actual: {feature_output_shape}")
+        st.stop()
 
-    expected_feature_dimension = (
-        224
-    )
+    if getattr(scaler, "n_features_in_", 224) != 224:
+        st.error("RobustScaler expects a different feature dimension.")
+        st.write(f"Scaler feature count: {scaler.n_features_in_}")
+        st.stop()
 
-    if (
-        feature_output_shape[-1]
-        !=
-        expected_feature_dimension
-    ):
-
-        st.error(
-            "GSFF feature dimension mismatch."
-        )
-
-        st.write(
-            f"Expected: "
-            f"{expected_feature_dimension}"
-        )
-
-        st.write(
-            f"Actual: "
-            f"{feature_output_shape}"
-        )
-
+    if getattr(svm, "n_features_in_", 224) != 224:
+        st.error("SVM expects a different feature dimension.")
+        st.write(f"SVM feature count: {svm.n_features_in_}")
         st.stop()
 
 except Exception as e:
-
-    st.error(
-        "Unable to verify GSFF feature dimension."
-    )
-
-    st.exception(
-        e
-    )
-
+    st.error("Unable to verify GSFF feature dimension.")
+    st.exception(e)
     st.stop()
 
 
@@ -496,34 +276,14 @@ except Exception as e:
 # SESSION STATE
 # ============================================================
 
-if (
-    "analysis_result"
-    not in st.session_state
-):
+if "analysis_result" not in st.session_state:
+    st.session_state.analysis_result = None
 
-    st.session_state.analysis_result = (
-        None
-    )
+if "pdf_report" not in st.session_state:
+    st.session_state.pdf_report = None
 
-
-if (
-    "pdf_report"
-    not in st.session_state
-):
-
-    st.session_state.pdf_report = (
-        None
-    )
-
-
-if (
-    "uploaded_signature"
-    not in st.session_state
-):
-
-    st.session_state.uploaded_signature = (
-        None
-    )
+if "uploaded_signature" not in st.session_state:
+    st.session_state.uploaded_signature = None
 
 
 # ============================================================
@@ -533,261 +293,131 @@ if (
 st.markdown(
     """
     <style>
-
-    /* =======================================================
-       MAIN PAGE
-       ======================================================= */
-
     .block-container {
-
         padding-top: 3.5rem !important;
-
         padding-bottom: 2.5rem;
-
         max-width: 100%;
     }
 
-
-    /* =======================================================
-       THEME-AWARE STREAMLIT HEADINGS
-       ======================================================= */
-
-    h1,
-    h2,
-    h3 {
-
+    h1, h2, h3 {
         color: var(--text-color);
     }
-
-
-    /* =======================================================
-       HEADER
-       ======================================================= */
 
     .main-title {
-
         text-align: center;
-
         font-size: 38px;
-
         font-weight: 750;
-
         line-height: 1.25;
-
         margin-top: 0px;
-
         margin-bottom: 10px;
-
         padding-top: 4px;
-
         color: var(--text-color);
     }
-
 
     .brand-name {
-
         text-align: center;
-
         font-size: 17px;
-
         font-weight: 650;
-
         line-height: 1.4;
-
         margin-top: 2px;
-
         margin-bottom: 10px;
-
         color: var(--text-color);
     }
-
 
     .subtitle {
-
         text-align: center;
-
         font-size: 16px;
-
         line-height: 1.6;
-
         margin-top: 8px;
-
         margin-bottom: 10px;
-
         color: var(--text-color);
     }
 
-
     .header-divider {
-
         border: none;
-
-        border-top:
-            1px solid
-            rgba(128, 128, 128, 0.35);
-
+        border-top: 1px solid rgba(128, 128, 128, 0.35);
         margin-top: 20px;
-
         margin-bottom: 30px;
     }
 
-
-    /* =======================================================
-       ANALYSIS BUTTON
-       ======================================================= */
-
     div[data-testid="stButton"] > button {
-
         width: 100%;
-
         min-height: 42px;
-
         border: 0;
-
         border-radius: 8px;
-
         background-color: #ff4b4b;
-
         color: white;
-
         font-weight: 600;
     }
 
-
     div[data-testid="stButton"] > button:hover {
-
         background-color: #f13f3f;
-
         color: white;
-
         border: 0;
     }
 
-
     div[data-testid="stButton"] > button:focus {
-
         color: white;
-
         border: 0;
-
         box-shadow: none;
     }
 
-
-    /* =======================================================
-       MODALITY TEXT
-       ======================================================= */
-
     .modality-text {
-
         font-size: 26px;
-
         font-weight: 650;
-
         margin-top: 4px;
-
         margin-bottom: 22px;
-
         color: var(--text-color);
     }
 
-
-    /* =======================================================
-       FINAL RESULT
-       ======================================================= */
-
     .final-result {
-
         width: 100%;
-
         box-sizing: border-box;
-
         border-radius: 8px;
-
         padding: 24px 16px;
-
         margin-top: 8px;
-
         margin-bottom: 24px;
-
         font-size: 26px;
-
         font-weight: 700;
     }
 
-
     .final-normal {
-
         background-color: #e4f6e9;
-
         color: #008b3d;
     }
 
-
     .final-benign {
-
         background-color: #fff4d6;
-
         color: #9a6700;
     }
 
-
     .final-malignant {
-
         background-color: #fde8e8;
-
         color: #c62828;
     }
 
-
-    /* =======================================================
-       REPORT
-       ======================================================= */
-
     .report-divider {
-
         border: none;
-
-        border-top:
-            1px solid
-            rgba(128, 128, 128, 0.35);
-
+        border-top: 1px solid rgba(128, 128, 128, 0.35);
         margin-top: 30px;
-
         margin-bottom: 36px;
     }
 
-
     .research-note {
-
         margin-top: 24px;
-
         color: var(--text-color);
-
         opacity: 0.65;
-
         font-size: 13px;
-
         line-height: 1.5;
     }
 
-
-    /* =======================================================
-       PDF DOWNLOAD BUTTON
-       ======================================================= */
-
     div[data-testid="stDownloadButton"] > button {
-
         width: 100%;
-
         min-height: 42px;
-
         border-radius: 8px;
     }
-
     </style>
     """,
-
     unsafe_allow_html=True,
 )
 
@@ -796,205 +426,94 @@ st.markdown(
 # COLOUR IMAGE CHECK
 # ============================================================
 
-def check_color_image(
-    image
-):
+def check_color_image(image):
 
     rgb = np.asarray(
         image.convert("RGB"),
-        dtype=np.float32
+        dtype=np.float32,
     )
 
     red = rgb[:, :, 0]
-
     green = rgb[:, :, 1]
-
     blue = rgb[:, :, 2]
 
-    rg_difference = np.mean(
-        np.abs(
-            red - green
-        )
-    )
-
-    gb_difference = np.mean(
-        np.abs(
-            green - blue
-        )
-    )
-
-    rb_difference = np.mean(
-        np.abs(
-            red - blue
-        )
-    )
+    rg_difference = np.mean(np.abs(red - green))
+    gb_difference = np.mean(np.abs(green - blue))
+    rb_difference = np.mean(np.abs(red - blue))
 
     average_difference = (
-
-        rg_difference
-        +
-        gb_difference
-        +
-        rb_difference
-
+        rg_difference + gb_difference + rb_difference
     ) / 3.0
 
-    is_color = (
-        average_difference
-        >
-        COLOR_TOLERANCE
-    )
+    is_color = average_difference > COLOR_TOLERANCE
 
-    return (
-        is_color,
-        float(
-            average_difference
-        )
-    )
+    return is_color, float(average_difference)
 
 
 # ============================================================
 # BASIC IMAGE VALIDATION
 # ============================================================
 
-def validate_image(
-    image
-):
+def validate_image(image):
 
-    width, height = (
-        image.size
-    )
+    width, height = image.size
 
-    if (
-        width < 64
-        or
-        height < 64
-    ):
+    if width < 64 or height < 64:
+        return False, "Image resolution is too small."
 
-        return (
-            False,
-            "Image resolution is too small."
-        )
+    array = np.asarray(image)
 
+    if array.size == 0:
+        return False, "Image is empty."
 
-    array = np.asarray(
-        image
-    )
-
-    if (
-        array.size
-        ==
-        0
-    ):
-
-        return (
-            False,
-            "Image is empty."
-        )
-
-
-    is_color, _ = (
-        check_color_image(
-            image
-        )
-    )
-
+    is_color, _ = check_color_image(image)
 
     if is_color:
-
         return (
             False,
-            "Color image detected. "
-            "Please input a lung CT image."
+            "Color image detected. Please input a lung CT image.",
         )
-
 
     gray = np.asarray(
         image.convert("L"),
-        dtype=np.float32
+        dtype=np.float32,
     )
 
+    if np.std(gray) < 8:
+        return False, "Image appears blank or invalid."
 
-    if (
-        np.std(gray)
-        <
-        8
-    ):
+    dark_ratio = np.mean(gray < 10)
 
-        return (
-            False,
-            "Image appears blank or invalid."
-        )
+    if dark_ratio > 0.98:
+        return False, "Image is almost completely black."
 
+    bright_ratio = np.mean(gray > 245)
 
-    dark_ratio = np.mean(
-        gray < 10
-    )
+    if bright_ratio > 0.98:
+        return False, "Image is almost completely white."
 
-
-    if (
-        dark_ratio
-        >
-        0.98
-    ):
-
-        return (
-            False,
-            "Image is almost completely black."
-        )
-
-
-    bright_ratio = np.mean(
-        gray > 245
-    )
-
-
-    if (
-        bright_ratio
-        >
-        0.98
-    ):
-
-        return (
-            False,
-            "Image is almost completely white."
-        )
-
-
-    return (
-        True,
-        "Image passed basic validation."
-    )
+    return True, "Image passed basic validation."
 
 
 # ============================================================
 # PREPROCESS FOR CT VERIFIER
 # ============================================================
 
-def preprocess_for_ct_verifier(
-    image
-):
+def preprocess_for_ct_verifier(image):
 
-    image = image.convert(
-        "RGB"
-    )
-
+    image = image.convert("RGB")
     image = image.resize(
         CT_VERIFIER_IMAGE_SIZE,
-        Image.Resampling.LANCZOS
+        Image.Resampling.LANCZOS,
     )
 
     image_array = np.asarray(
         image,
-        dtype=np.float32
+        dtype=np.float32,
     )
 
     image_array /= 255.0
-
-    image_array = np.expand_dims(
-        image_array,
-        axis=0
-    )
+    image_array = np.expand_dims(image_array, axis=0)
 
     return image_array
 
@@ -1003,32 +522,21 @@ def preprocess_for_ct_verifier(
 # PREPROCESS FOR GSFF
 # ============================================================
 
-def preprocess_for_gsff(
-    image
-):
+def preprocess_for_gsff(image):
 
-    image = image.convert(
-        "RGB"
-    )
-
+    image = image.convert("RGB")
     image = image.resize(
         FEATURE_EXTRACTOR_IMAGE_SIZE,
-        Image.Resampling.LANCZOS
+        Image.Resampling.LANCZOS,
     )
 
     image_array = np.asarray(
         image,
-        dtype=np.float32
+        dtype=np.float32,
     )
 
-    image_array = np.expand_dims(
-        image_array,
-        axis=0
-    )
-
-    image_array = preprocess_input(
-        image_array
-    )
+    image_array = np.expand_dims(image_array, axis=0)
+    image_array = preprocess_input(image_array)
 
     return image_array
 
@@ -1037,93 +545,48 @@ def preprocess_for_gsff(
 # MODALITY VERIFICATION
 # ============================================================
 
-def verify_modality(
-    image
-):
+def verify_modality(image):
 
-    image_array = (
-        preprocess_for_ct_verifier(
-            image
-        )
-    )
+    image_array = preprocess_for_ct_verifier(image)
 
-    predictions = (
-        ct_verifier.predict(
-            image_array,
-            verbose=0
-        )
+    predictions = ct_verifier.predict(
+        image_array,
+        verbose=0,
     )
 
     probabilities = np.asarray(
         predictions[0],
-        dtype=np.float32
+        dtype=np.float32,
     )
 
-    probability_sum = np.sum(
-        probabilities
-    )
+    probability_sum = np.sum(probabilities)
 
-    if (
-        probability_sum
-        >
-        0
-    ):
+    if probability_sum > 0:
+        probabilities = probabilities / probability_sum
 
-        probabilities = (
-            probabilities
-            /
-            probability_sum
-        )
+    predicted_class = int(np.argmax(probabilities))
+    confidence = float(probabilities[predicted_class])
+    modality = modality_names[predicted_class]
 
-    predicted_class = int(
-        np.argmax(
-            probabilities
-        )
-    )
-
-    confidence = float(
-        probabilities[
-            predicted_class
-        ]
-    )
-
-    modality = (
-        modality_names[
-            predicted_class
-        ]
-    )
-
-    return (
-        modality,
-        confidence,
-        probabilities
-    )
+    return modality, confidence, probabilities
 
 
 # ============================================================
 # GSFF FEATURE EXTRACTION
 # ============================================================
 
-def extract_gsff_features(
-    image
-):
+def extract_gsff_features(image):
 
-    image_array = (
-        preprocess_for_gsff(
-            image
-        )
-    )
+    image_array = preprocess_for_gsff(image)
 
-    features = (
-        feature_extractor.predict(
-            image_array,
-            verbose=0
-        )
+    features = feature_extractor.predict(
+        image_array,
+        verbose=0,
     )
 
     features = np.asarray(
         features,
-        dtype=np.float32
+        dtype=np.float32,
     )
 
     return features
@@ -1133,87 +596,35 @@ def extract_gsff_features(
 # LUNG CANCER PREDICTION
 # ============================================================
 
-def predict_lung_cancer(
-    image
-):
+def predict_lung_cancer(image):
 
-    features = (
-        extract_gsff_features(
-            image
-        )
-    )
+    features = extract_gsff_features(image)
+    scaled_features = scaler.transform(features)
 
-    scaled_features = (
-        scaler.transform(
-            features
-        )
-    )
+    prediction = svm.predict(scaled_features)
+    predicted_index = int(prediction[0])
 
-    prediction = (
-        svm.predict(
-            scaled_features
-        )
-    )
+    probabilities = svm.predict_proba(scaled_features)[0]
 
-    predicted_index = int(
-        prediction[0]
-    )
+    predicted_class = class_names[predicted_index]
+    confidence = float(probabilities[predicted_index])
 
-    probabilities = (
-        svm.predict_proba(
-            scaled_features
-        )[0]
-    )
-
-    predicted_class = (
-        class_names[
-            predicted_index
-        ]
-    )
-
-    confidence = float(
-        probabilities[
-            predicted_index
-        ]
-    )
-
-    return (
-        predicted_class,
-        confidence,
-        probabilities
-    )
+    return predicted_class, confidence, probabilities
 
 
 # ============================================================
 # FRIENDLY MODALITY NAME
 # ============================================================
 
-def friendly_modality_name(
-    modality
-):
+def friendly_modality_name(modality):
 
-    if (
-        modality
-        ==
-        "CHEST_XRAY"
-    ):
-
+    if modality == "CHEST_XRAY":
         return "X-ray"
 
-    if (
-        modality
-        ==
-        "CT"
-    ):
-
+    if modality == "CT":
         return "CT"
 
-    if (
-        modality
-        ==
-        "MRI"
-    ):
-
+    if modality == "MRI":
         return "MRI"
 
     return modality
@@ -1310,28 +721,17 @@ def create_pdf_report(
         textColor=colors.black,
     )
 
-    story = []
-
-    story.append(
-        Paragraph(
-            "PulmoVision",
-            title_style
-        )
-    )
-
-    story.append(
+    story = [
+        Paragraph("PulmoVision", title_style),
         Paragraph(
             "AI-Powered Lung Cancer Detection System",
-            system_title_style
-        )
-    )
-
-    story.append(
+            system_title_style,
+        ),
         Paragraph(
             "Medical Image Analysis Report",
-            report_title_style
-        )
-    )
+            report_title_style,
+        ),
+    ]
 
     report_time = datetime.now().strftime(
         "%d %B %Y, %I:%M:%S %p"
@@ -1340,32 +740,23 @@ def create_pdf_report(
     story.append(
         Paragraph(
             f"<b>Analysis Date:</b> {report_time}",
-            date_style
+            date_style,
         )
     )
 
     image_buffer = io.BytesIO()
 
-    image.convert(
-        "RGB"
-    ).save(
+    image.convert("RGB").save(
         image_buffer,
-        format="PNG"
+        format="PNG",
     )
 
     image_buffer.seek(0)
 
-    image_width, image_height = (
-        image.size
-    )
+    image_width, image_height = image.size
 
-    max_image_width = (
-        100 * mm
-    )
-
-    max_image_height = (
-        92 * mm
-    )
+    max_image_width = 100 * mm
+    max_image_height = 92 * mm
 
     image_scale = min(
         max_image_width / image_width,
@@ -1374,352 +765,129 @@ def create_pdf_report(
 
     report_image = RLImage(
         image_buffer,
-        width=(
-            image_width
-            *
-            image_scale
-        ),
-        height=(
-            image_height
-            *
-            image_scale
-        ),
+        width=image_width * image_scale,
+        height=image_height * image_scale,
     )
 
     report_image.hAlign = "CENTER"
 
-    story.append(
-        report_image
-    )
+    story.append(report_image)
+    story.append(Spacer(1, 10))
 
-    story.append(
-        Spacer(
-            1,
-            10
-        )
-    )
-
-
-    def apply_report_table_style(
-        table
-    ):
+    def apply_report_table_style(table):
 
         table.setStyle(
-            TableStyle(
-                [
-
-                    (
-                        "BACKGROUND",
-                        (0, 0),
-                        (-1, 0),
-                        colors.lightgrey,
-                    ),
-
-                    (
-                        "GRID",
-                        (0, 0),
-                        (-1, -1),
-                        0.5,
-                        colors.grey,
-                    ),
-
-                    (
-                        "FONTNAME",
-                        (0, 0),
-                        (-1, 0),
-                        "Helvetica-Bold",
-                    ),
-
-                    (
-                        "FONTNAME",
-                        (0, 1),
-                        (-1, -1),
-                        "Helvetica",
-                    ),
-
-                    (
-                        "FONTSIZE",
-                        (0, 0),
-                        (-1, -1),
-                        10,
-                    ),
-
-                    (
-                        "ALIGN",
-                        (0, 0),
-                        (-1, -1),
-                        "LEFT",
-                    ),
-
-                    (
-                        "VALIGN",
-                        (0, 0),
-                        (-1, -1),
-                        "MIDDLE",
-                    ),
-
-                    (
-                        "LEFTPADDING",
-                        (0, 0),
-                        (-1, -1),
-                        7,
-                    ),
-
-                    (
-                        "RIGHTPADDING",
-                        (0, 0),
-                        (-1, -1),
-                        7,
-                    ),
-
-                    (
-                        "TOPPADDING",
-                        (0, 0),
-                        (-1, -1),
-                        4,
-                    ),
-
-                    (
-                        "BOTTOMPADDING",
-                        (0, 0),
-                        (-1, -1),
-                        4,
-                    ),
-                ]
-            )
+            TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
+                ("FONTSIZE", (0, 0), (-1, -1), 10),
+                ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 7),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ])
         )
 
-
-    # ========================================================
-    # 1. MEDICAL IMAGE MODALITY
-    # ========================================================
-
+    # 1. Medical image modality
     story.append(
-        Paragraph(
-            "1. Medical Image Modality",
-            heading_style
-        )
+        Paragraph("1. Medical Image Modality", heading_style)
     )
 
     modality_data = [
-
-        [
-            "Parameter",
-            "Result"
-        ],
-
-        [
-            "Detected Modality",
-            friendly_modality_name(
-                modality
-            )
-        ],
-
-        [
-            "Modality Confidence",
-            f"{modality_confidence * 100:.2f}%"
-        ],
+        ["Parameter", "Result"],
+        ["Detected Modality", friendly_modality_name(modality)],
+        ["Modality Confidence", f"{modality_confidence * 100:.2f}%"],
     ]
 
     modality_table = Table(
         modality_data,
-        colWidths=[
-            84 * mm,
-            84 * mm
-        ],
+        colWidths=[84 * mm, 84 * mm],
         hAlign="CENTER",
     )
 
-    apply_report_table_style(
-        modality_table
-    )
+    apply_report_table_style(modality_table)
+    story.append(modality_table)
+    story.append(Spacer(1, 10))
 
+    # 2. CT verification
     story.append(
-        modality_table
-    )
-
-    story.append(
-        Spacer(
-            1,
-            10
-        )
-    )
-
-
-    # ========================================================
-    # 2. CT VERIFICATION
-    # ========================================================
-
-    story.append(
-        Paragraph(
-            "2. CT Verification",
-            heading_style
-        )
+        Paragraph("2. CT Verification", heading_style)
     )
 
     ct_verification_data = [
-
-        [
-            "Parameter",
-            "Result"
-        ],
-
-        [
-            "CT Verification",
-            "CT"
-        ],
-
-        [
-            "CT Probability",
-            f"{modality_probabilities[1] * 100:.2f}%"
-        ],
+        ["Parameter", "Result"],
+        ["CT Verification", "CT"],
+        ["CT Probability", f"{modality_probabilities[1] * 100:.2f}%"],
     ]
 
     ct_verification_table = Table(
         ct_verification_data,
-        colWidths=[
-            84 * mm,
-            84 * mm
-        ],
+        colWidths=[84 * mm, 84 * mm],
         hAlign="CENTER",
     )
 
-    apply_report_table_style(
-        ct_verification_table
-    )
+    apply_report_table_style(ct_verification_table)
+    story.append(ct_verification_table)
+    story.append(Spacer(1, 10))
 
+    # 3. Lung cancer detection
     story.append(
-        ct_verification_table
-    )
-
-    story.append(
-        Spacer(
-            1,
-            10
-        )
-    )
-
-
-    # ========================================================
-    # 3. LUNG CANCER DETECTION
-    # ========================================================
-
-    story.append(
-        Paragraph(
-            "3. Lung Cancer Detection",
-            heading_style
-        )
+        Paragraph("3. Lung Cancer Detection", heading_style)
     )
 
     result_data = [
-
-        [
-            "Parameter",
-            "Result"
-        ],
-
-        [
-            "Final Diagnosis",
-            predicted_class
-        ],
-
-        [
-            "Diagnosis Confidence",
-            f"{prediction_confidence * 100:.2f}%"
-        ],
+        ["Parameter", "Result"],
+        ["Predicted Class", predicted_class],
+        ["Prediction Confidence", f"{prediction_confidence * 100:.2f}%"],
     ]
 
     result_table = Table(
         result_data,
-        colWidths=[
-            84 * mm,
-            84 * mm
-        ],
+        colWidths=[84 * mm, 84 * mm],
         hAlign="CENTER",
     )
 
-    apply_report_table_style(
-        result_table
-    )
-
-    story.append(
-        result_table
-    )
-
-
-    # ========================================================
-    # DISCLAIMER
-    # ========================================================
+    apply_report_table_style(result_table)
+    story.append(result_table)
 
     story.append(
         Paragraph(
-            "<b>Disclaimer:</b> "
-            "This application is a research prototype "
-            "and is not intended to provide clinical "
-            "diagnosis or replace professional medical "
-            "evaluation.",
+            "<b>Disclaimer:</b> This application is a research "
+            "prototype and is not intended to provide clinical "
+            "diagnosis or replace professional medical evaluation.",
             disclaimer_style,
         )
     )
 
-
-    # ========================================================
-    # BUILD PDF
-    # ========================================================
-
-    document.build(
-        story
-    )
-
+    document.build(story)
     buffer.seek(0)
 
-    return (
-        buffer.getvalue()
-    )
+    return buffer.getvalue()
 
 
 # ============================================================
 # FINAL RESULT DISPLAY
 # ============================================================
 
-def render_final_result(
-    predicted_class
-):
+def render_final_result(predicted_class):
 
-    if (
-        predicted_class
-        ==
-        "Normal"
-    ):
-
-        css_class = (
-            "final-normal"
-        )
-
-    elif (
-        predicted_class
-        ==
-        "Benign"
-    ):
-
-        css_class = (
-            "final-benign"
-        )
-
+    if predicted_class == "Normal":
+        css_class = "final-normal"
+    elif predicted_class == "Benign":
+        css_class = "final-benign"
     else:
-
-        css_class = (
-            "final-malignant"
-        )
+        css_class = "final-malignant"
 
     st.markdown(
-
         f"""
         <div class="final-result {css_class}">
             Final Result: {predicted_class}
         </div>
         """,
-
         unsafe_allow_html=True,
     )
 
@@ -1730,50 +898,24 @@ def render_final_result(
 
 def reset_analysis_state():
 
-    st.session_state.analysis_result = (
-        None
-    )
-
-    st.session_state.pdf_report = (
-        None
-    )
+    st.session_state.analysis_result = None
+    st.session_state.pdf_report = None
 
 
 # ============================================================
 # PULMOVISION HEADER
 # ============================================================
 
-header_left, header_center, header_right = (
-    st.columns(
-        [
-            1.20,
-            8.60,
-            1.20
-        ],
-        vertical_alignment="center",
-    )
+header_left, header_center, header_right = st.columns(
+    [1.20, 8.60, 1.20],
+    vertical_alignment="center",
 )
-
-
-# ============================================================
-# HEADER IMAGE
-# ============================================================
 
 with header_left:
 
-    if (
-        LUNG_ICON_PATH.exists()
-    ):
-
-        st.image(
-            str(
-                LUNG_ICON_PATH
-            ),
-            width=105,
-        )
-
+    if LUNG_ICON_PATH.exists():
+        st.image(str(LUNG_ICON_PATH), width=105)
     else:
-
         st.markdown(
             """
             <div style="
@@ -1786,11 +928,6 @@ with header_left:
             """,
             unsafe_allow_html=True,
         )
-
-
-# ============================================================
-# HEADER TEXT
-# ============================================================
 
 with header_center:
 
@@ -1812,19 +949,8 @@ with header_center:
         unsafe_allow_html=True,
     )
 
-
-# ============================================================
-# RIGHT SIDE SPACER
-# ============================================================
-
 with header_right:
-
     st.write("")
-
-
-# ============================================================
-# HEADER DIVIDER
-# ============================================================
 
 st.markdown(
     '<hr class="header-divider">',
@@ -1836,19 +962,11 @@ st.markdown(
 # UPLOAD MEDICAL IMAGE
 # ============================================================
 
-st.header(
-    "Upload Medical Image"
-)
+st.header("Upload Medical Image")
 
 uploaded_file = st.file_uploader(
     "Choose an image",
-    type=[
-        "jpg",
-        "jpeg",
-        "png",
-        "bmp",
-        "webp",
-    ],
+    type=["jpg", "jpeg", "png", "bmp", "webp"],
 )
 
 
@@ -1856,550 +974,209 @@ uploaded_file = st.file_uploader(
 # PROCESS UPLOADED IMAGE
 # ============================================================
 
-if (
-    uploaded_file
-    is not None
-):
+if uploaded_file is not None:
 
-    uploaded_bytes = (
-        uploaded_file.getvalue()
-    )
+    uploaded_bytes = uploaded_file.getvalue()
 
+    file_signature = hashlib.sha256(
+        uploaded_bytes
+    ).hexdigest()
 
-    # ========================================================
-    # IMAGE SIGNATURE
-    # ========================================================
+    if st.session_state.uploaded_signature != file_signature:
 
-    file_signature = (
-        hashlib.sha256(
-            uploaded_bytes
-        ).hexdigest()
-    )
-
-
-    # ========================================================
-    # RESET PREVIOUS RESULT IF NEW IMAGE
-    # ========================================================
-
-    if (
-        st.session_state.uploaded_signature
-        !=
-        file_signature
-    ):
-
-        st.session_state.uploaded_signature = (
-            file_signature
-        )
-
+        st.session_state.uploaded_signature = file_signature
         reset_analysis_state()
 
-
-    # ========================================================
-    # OPEN IMAGE
-    # ========================================================
-
     try:
-
-        image = Image.open(
-            io.BytesIO(
-                uploaded_bytes
-            )
-        )
-
+        image = Image.open(io.BytesIO(uploaded_bytes))
         image.load()
-
     except Exception as e:
-
-        st.error(
-            "Unable to read the uploaded image."
-        )
-
-        st.exception(
-            e
-        )
-
+        st.error("Unable to read the uploaded image.")
+        st.exception(e)
         st.stop()
 
+    st.header("Uploaded Medical Image")
 
-    # ========================================================
-    # UPLOADED MEDICAL IMAGE
-    # ========================================================
-
-    st.header(
-        "Uploaded Medical Image"
-    )
-
-
-    image_left, image_center, image_right = (
-        st.columns(
-            [
-                1,
-                2,
-                1
-            ]
-        )
-    )
-
+    image_left, image_center, image_right = st.columns([1, 2, 1])
 
     with image_center:
-
         st.image(
             image,
             caption="Uploaded Medical Image",
             use_container_width=True,
         )
 
-
-    # ========================================================
-    # ANALYSIS BUTTON
-    # ========================================================
-
     analyze_clicked = st.button(
         "Check Your Image By Initiating AI Analysis",
         use_container_width=True,
     )
 
-
-    # ========================================================
-    # RUN ANALYSIS
-    # ========================================================
-
-    if (
-        analyze_clicked
-    ):
+    if analyze_clicked:
 
         reset_analysis_state()
 
+        # STEP 1: Basic validation
+        is_valid, validation_message = validate_image(image)
 
-        # ====================================================
-        # STEP 1
-        # BASIC IMAGE VALIDATION
-        # ====================================================
-
-        is_valid, validation_message = (
-            validate_image(
-                image
-            )
-        )
-
-
-        if (
-            not is_valid
-        ):
-
-            st.error(
-                validation_message
-            )
-
+        if not is_valid:
+            st.error(validation_message)
             st.stop()
 
+        st.success(validation_message)
 
-        st.success(
-            validation_message
-        )
-
-
-        # ====================================================
-        # STEP 2
-        # MEDICAL IMAGE TYPE CLASSIFICATION
-        # ====================================================
-
+        # STEP 2: Modality classification
         try:
-
-            with st.spinner(
-                "Detecting medical image type..."
-            ):
-
+            with st.spinner("Detecting medical image type..."):
                 (
                     modality,
                     modality_confidence,
                     modality_probabilities,
-
-                ) = verify_modality(
-                    image
-                )
+                ) = verify_modality(image)
 
         except Exception as e:
-
-            st.error(
-                "Medical image type detection failed."
-            )
-
-            st.exception(
-                e
-            )
-
+            st.error("Medical image type detection failed.")
+            st.exception(e)
             st.stop()
 
-
-        # ====================================================
-        # DETECTED MEDICAL IMAGE TYPE
-        # ====================================================
-
-        st.header(
-            "Detected Medical Image Type"
-        )
-
+        st.header("Detected Medical Image Type")
 
         st.markdown(
-
             f"""
             <div class="modality-text">
                 {friendly_modality_name(modality)}
             </div>
             """,
-
             unsafe_allow_html=True,
         )
 
+        st.header("CT Verification")
 
-        # ====================================================
-        # CT VERIFICATION
-        # ====================================================
-
-        st.header(
-            "CT Verification"
-        )
-
-
-        # ====================================================
-        # CT ACCEPTED
-        # ====================================================
-
+        # CT accepted
         if (
-
-            modality
-            ==
-            "CT"
-
-            and
-
-            modality_confidence
-            >=
-            MODALITY_THRESHOLD
+            modality == "CT"
+            and modality_confidence >= MODALITY_THRESHOLD
         ):
+            st.success("Chest CT verified successfully.")
 
-            st.success(
-                "Chest CT verified successfully."
-            )
-
-
-        # ====================================================
-        # X-RAY REJECTED
-        # ====================================================
-
-        elif (
-            modality
-            ==
-            "CHEST_XRAY"
-        ):
-
-            st.error(
-                "Chest X-ray detected."
-            )
-
+        # X-ray rejected
+        elif modality == "CHEST_XRAY":
+            st.error("Chest X-ray detected.")
             st.warning(
-                "Lung cancer classification "
-                "was not performed because "
-                "this pipeline is designed "
-                "for CT images."
+                "Lung cancer classification was not performed "
+                "because this pipeline is designed for CT images."
             )
-
             st.stop()
 
-
-        # ====================================================
-        # MRI REJECTED
-        # ====================================================
-
-        elif (
-            modality
-            ==
-            "MRI"
-        ):
-
-            st.error(
-                "MRI image detected."
-            )
-
+        # MRI rejected
+        elif modality == "MRI":
+            st.error("MRI image detected.")
             st.warning(
-                "Lung cancer classification "
-                "was not performed because "
-                "this pipeline is designed "
-                "for CT images."
+                "Lung cancer classification was not performed "
+                "because this pipeline is designed for CT images."
             )
-
             st.stop()
 
-
-        # ====================================================
-        # LOW CONFIDENCE
-        # ====================================================
-
+        # Low confidence
         else:
-
             st.error(
-                "The image could not be verified "
-                "as a CT scan with sufficient confidence."
+                "The image could not be verified as a CT scan "
+                "with sufficient confidence."
             )
-
-            st.warning(
-                "Please upload a clear lung CT image."
-            )
-
+            st.warning("Please upload a clear lung CT image.")
             st.stop()
 
-
-        # ====================================================
-        # STEP 3
-        # LUNG CANCER CLASSIFICATION
-        # ====================================================
-
+        # STEP 3: Lung cancer classification
         try:
-
-            with st.spinner(
-                "Running lung cancer analysis..."
-            ):
-
+            with st.spinner("Running lung cancer analysis..."):
                 (
                     predicted_class,
                     prediction_confidence,
                     class_probabilities,
-
-                ) = predict_lung_cancer(
-                    image
-                )
+                ) = predict_lung_cancer(image)
 
         except Exception as e:
-
-            st.error(
-                "Lung cancer prediction failed."
-            )
-
-            st.exception(
-                e
-            )
-
+            st.error("Lung cancer prediction failed.")
+            st.exception(e)
             st.stop()
 
-
-        # ====================================================
-        # STEP 4
-        # CREATE PDF REPORT
-        # ====================================================
-
+        # STEP 4: Create PDF
         try:
-
             pdf_bytes = create_pdf_report(
-
                 image=image,
-
                 modality=modality,
-
-                modality_confidence=(
-                    modality_confidence
-                ),
-
-                modality_probabilities=(
-                    modality_probabilities
-                ),
-
-                predicted_class=(
-                    predicted_class
-                ),
-
-                prediction_confidence=(
-                    prediction_confidence
-                ),
-
-                class_probabilities=(
-                    class_probabilities
-                ),
+                modality_confidence=modality_confidence,
+                modality_probabilities=modality_probabilities,
+                predicted_class=predicted_class,
+                prediction_confidence=prediction_confidence,
+                class_probabilities=class_probabilities,
             )
 
         except Exception as e:
+            pdf_bytes = None
+            st.warning("PDF report could not be generated.")
+            st.exception(e)
 
-            pdf_bytes = (
-                None
-            )
-
-            st.warning(
-                "PDF report could not be generated."
-            )
-
-            st.exception(
-                e
-            )
-
-
-        # ====================================================
-        # SAVE RESULT
-        # ====================================================
-
+        # Save result
         st.session_state.analysis_result = {
-
-            "modality":
-                modality,
-
-            "modality_confidence":
-                modality_confidence,
-
-            "modality_probabilities":
-                modality_probabilities,
-
-            "predicted_class":
-                predicted_class,
-
-            "prediction_confidence":
-                prediction_confidence,
-
-            "class_probabilities":
-                class_probabilities,
+            "modality": modality,
+            "modality_confidence": modality_confidence,
+            "modality_probabilities": modality_probabilities,
+            "predicted_class": predicted_class,
+            "prediction_confidence": prediction_confidence,
+            "class_probabilities": class_probabilities,
         }
 
-
-        st.session_state.pdf_report = (
-            pdf_bytes
-        )
-
+        st.session_state.pdf_report = pdf_bytes
 
     # ========================================================
     # KEEP RESULTS VISIBLE AFTER RERUN
     # ========================================================
 
-    result = (
-        st.session_state.analysis_result
-    )
+    result = st.session_state.analysis_result
 
+    if result is not None:
 
-    if (
-        result is not None
-    ):
+        if not analyze_clicked:
 
+            st.success("Image passed basic validation.")
 
-        # ====================================================
-        # RESTORE DISPLAY AFTER DOWNLOAD BUTTON RERUN
-        # ====================================================
-
-        if (
-            not analyze_clicked
-        ):
-
-            st.success(
-                "Image passed basic validation."
-            )
-
-
-            st.header(
-                "Detected Medical Image Type"
-            )
-
+            st.header("Detected Medical Image Type")
 
             st.markdown(
-
                 f"""
                 <div class="modality-text">
-                    {
-                        friendly_modality_name(
-                            result["modality"]
-                        )
-                    }
+                    {friendly_modality_name(result["modality"])}
                 </div>
                 """,
-
                 unsafe_allow_html=True,
             )
 
+            st.header("CT Verification")
+            st.success("Chest CT verified successfully.")
 
-            st.header(
-                "CT Verification"
-            )
+        st.header("Lung Cancer Detection")
 
-
-            st.success(
-                "Chest CT verified successfully."
-            )
-
-
-        # ====================================================
-        # LUNG CANCER DETECTION
-        # ====================================================
-
-        st.header(
-            "Lung Cancer Detection"
-        )
-
-
-        # ====================================================
-        # FINAL RESULT
-        # ====================================================
-
-        render_final_result(
-            result[
-                "predicted_class"
-            ]
-        )
-
-
-        # ====================================================
-        # DIVIDER
-        # ====================================================
+        render_final_result(result["predicted_class"])
 
         st.markdown(
             '<hr class="report-divider">',
             unsafe_allow_html=True,
         )
 
+        st.header("Analysis Report")
 
-        # ====================================================
-        # ANALYSIS REPORT
-        # ====================================================
-
-        st.header(
-            "Analysis Report"
-        )
-
-
-        # ====================================================
-        # DOWNLOAD PDF
-        # ====================================================
-
-        if (
-            st.session_state.pdf_report
-            is not None
-        ):
+        if st.session_state.pdf_report is not None:
 
             st.download_button(
-
-                label=(
-                    "Download Final Report (PDF)"
-                ),
-
-                data=(
-                    st.session_state.pdf_report
-                ),
-
-                file_name=(
-                    "PulmoVision_Lung_Cancer_Report.pdf"
-                ),
-
-                mime=(
-                    "application/pdf"
-                ),
-
+                label="Download Final Report (PDF)",
+                data=st.session_state.pdf_report,
+                file_name="PulmoVision_Lung_Cancer_Report.pdf",
+                mime="application/pdf",
                 use_container_width=True,
             )
 
         else:
-
-            st.warning(
-                "The PDF report is currently unavailable."
-            )
-
-
-        # ====================================================
-        # DISCLAIMER
-        # ====================================================
+            st.warning("The PDF report is currently unavailable.")
 
         st.markdown(
             """
